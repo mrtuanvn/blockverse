@@ -5,6 +5,7 @@ import { RigidBody, CuboidCollider, useRapier } from '@react-three/rapier';
 import { Text } from '@react-three/drei';
 import * as THREE from 'three';
 import { useGameStore } from '@/game/store';
+import { getInputState, initKeyboardInput } from '@/game/hooks/useInputState';
 import Sky from '@/game/components/Sky';
 import Lighting from '@/game/components/Lighting';
 import CollectibleItem from '@/game/components/CollectibleItem';
@@ -751,8 +752,8 @@ function EnvironmentDecor() {
 
 // ===== SpeedRunPlayer Component (auto-running player) =====
 function SpeedRunPlayer({ playerRef }: { playerRef: React.RefObject<any> }) {
-  const keysPressed = useRef<Set<string>>(new Set());
   const isOnFloor = useRef(false);
+  const lastJump = useRef(false);
   const game = useGameStore((s) => s.game);
   const setTime = useGameStore((s) => s.setTime);
   const setScore = useGameStore((s) => s.setScore);
@@ -771,29 +772,7 @@ function SpeedRunPlayer({ playerRef }: { playerRef: React.RefObject<any> }) {
     startTime.current = Date.now();
     hasFinished.current = false;
     coinCount.current = 0;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      keysPressed.current.add(e.key.toLowerCase());
-      if (e.key.toLowerCase() === 'r' && game.isGameOver) {
-        hasFinished.current = false;
-        startTime.current = Date.now();
-        coinCount.current = 0;
-        if (apiRef.current) {
-          apiRef.current.setTranslation({ x: 0, y: 2, z: 0 }, true);
-          apiRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
-        }
-      }
-    };
-    const handleKeyUp = (e: KeyboardEvent) => {
-      keysPressed.current.delete(e.key.toLowerCase());
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-    };
-  }, [game.isGameOver]);
+  }, []);
 
   useFrame((state, delta) => {
     if (!apiRef.current || !playerRef.current) {
@@ -828,12 +807,12 @@ function SpeedRunPlayer({ playerRef }: { playerRef: React.RefObject<any> }) {
     let targetVelZ = AUTO_RUN_SPEED;
     let targetVelX = 0;
 
-    const keys = keysPressed.current;
-    if (keys.has('a') || keys.has('arrowleft')) targetVelX = -SIDE_SPEED;
-    if (keys.has('d') || keys.has('arrowright')) targetVelX = SIDE_SPEED;
+    // ─── Read from shared input state (works for both keyboard + touch) ───
+    const input = getInputState();
+    targetVelX = input.moveX * SIDE_SPEED;
 
-    // Slow down auto-run when pressing s (brake)
-    if (keys.has('s') || keys.has('arrowdown')) {
+    // Brake: pull back on joystick
+    if (input.moveZ > 0.3) {
       targetVelZ = 2;
     }
 
@@ -847,10 +826,12 @@ function SpeedRunPlayer({ playerRef }: { playerRef: React.RefObject<any> }) {
       true
     );
 
-    // Jump
-    if ((keys.has(' ') || keys.has('w') || keys.has('arrowup')) && isOnFloor.current) {
+    // Jump (edge-triggered)
+    const wantJump = input.jump || input.moveZ < -0.3;
+    if (wantJump && !lastJump.current && isOnFloor.current) {
       api.setLinvel({ x: rbVel.x, y: JUMP_FORCE, z: rbVel.z }, true);
     }
+    lastJump.current = wantJump;
 
     // Update timer
     const elapsed = (Date.now() - startTime.current) / 1000;

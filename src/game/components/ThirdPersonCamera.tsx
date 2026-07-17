@@ -4,6 +4,7 @@ import { useRef, useEffect, useCallback } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import type { Group } from 'three';
 import * as THREE from 'three';
+import { consumeCameraDelta, consumePointerLockRequest, isMobileDevice } from '@/game/hooks/useInputState';
 
 interface ThirdPersonCameraProps {
   targetRef?: React.RefObject<Group | null>;
@@ -26,11 +27,17 @@ export default function ThirdPersonCamera({
   const rotationX = useRef(0);
   const targetPosition = useRef(new THREE.Vector3(0, 2, 0));
   const internalRef = useRef<Group>(null);
+  const isMobile = useRef(false);
 
   const effectiveRef = targetRef || internalRef;
 
+  // Detect mobile once
+  useEffect(() => {
+    isMobile.current = isMobileDevice();
+  }, []);
+
   const handleClick = useCallback(() => {
-    if (!isLocked.current) {
+    if (!isLocked.current && !isMobile.current) {
       gl.domElement.requestPointerLock();
     }
   }, [gl]);
@@ -58,16 +65,22 @@ export default function ThirdPersonCamera({
 
   useEffect(() => {
     const canvas = gl.domElement;
-    canvas.addEventListener('click', handleClick);
-    document.addEventListener('pointerlockchange', handlePointerLockChange);
-    document.addEventListener('mousemove', handleMouseMove);
+
+    // Only add pointer lock listeners on desktop
+    if (!isMobile.current) {
+      canvas.addEventListener('click', handleClick);
+      document.addEventListener('pointerlockchange', handlePointerLockChange);
+      document.addEventListener('mousemove', handleMouseMove);
+    }
 
     return () => {
-      canvas.removeEventListener('click', handleClick);
-      document.removeEventListener('pointerlockchange', handlePointerLockChange);
-      document.removeEventListener('mousemove', handleMouseMove);
-      if (document.pointerLockElement === gl.domElement) {
-        document.exitPointerLock();
+      if (!isMobile.current) {
+        canvas.removeEventListener('click', handleClick);
+        document.removeEventListener('pointerlockchange', handlePointerLockChange);
+        document.removeEventListener('mousemove', handleMouseMove);
+        if (document.pointerLockElement === gl.domElement) {
+          document.exitPointerLock();
+        }
       }
     };
   }, [gl, handleClick, handlePointerLockChange, handleMouseMove]);
@@ -77,6 +90,18 @@ export default function ThirdPersonCamera({
     if (target) {
       targetPosition.current.copy(target.position);
       targetPosition.current.y += 2;
+    }
+
+    // ─── Consume touch camera delta (from MobileControls joystick area) ───
+    const touchDelta = consumeCameraDelta();
+    if (touchDelta.dx !== 0 || touchDelta.dy !== 0) {
+      rotationY.current -= touchDelta.dx;
+      rotationX.current = Math.max(
+        -Math.PI / 3,
+        Math.min(Math.PI / 3, rotationX.current + touchDelta.dy)
+      );
+      cameraOffsetState.rotationY = rotationY.current;
+      cameraOffsetState.rotationX = rotationX.current;
     }
 
     // Calculate camera position based on spherical coordinates

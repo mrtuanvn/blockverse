@@ -5,6 +5,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { RigidBody, CuboidCollider } from '@react-three/rapier';
 import type { Mesh, Group } from 'three';
 import { useGameStore } from '@/game/store';
+import { getInputState, initKeyboardInput, setTouchActive, isMobileDevice } from '@/game/hooks/useInputState';
 
 interface PlayerProps {
   position?: [number, number, number];
@@ -25,8 +26,8 @@ export default function Player({
   const rightLegRef = useRef<Group>(null);
   const apiRef = useRef<any>(null);
   const isOnFloor = useRef(false);
+  const lastJump = useRef(false);
   const keysPressed = useRef<Set<string>>(new Set());
-  const velocity = useRef<[number, number, number]>([0, 0, 0]);
 
   const loseLife = useGameStore((s) => s.loseLife);
   const game = useGameStore((s) => s.game);
@@ -36,27 +37,25 @@ export default function Player({
   const MOVE_SPEED = 6;
   const MAX_SPEED = 8;
 
+  // Initialize keyboard input system
   useEffect(() => {
+    const cleanup = initKeyboardInput();
+
+    // Legacy keyboard handlers for 'r' respawn (not in shared state)
     const handleKeyDown = (e: KeyboardEvent) => {
-      keysPressed.current.add(e.key.toLowerCase());
-      if (e.key.toLowerCase() === 'r' && game.isGameOver) {
-        if (apiRef.current) {
-          apiRef.current.setTranslation(
-            { x: spawnPos.current[0], y: spawnPos.current[1] + 2, z: spawnPos.current[2] },
-            true
-          );
-          apiRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
-        }
+      if (e.key.toLowerCase() === 'r' && game.isGameOver && apiRef.current) {
+        apiRef.current.setTranslation(
+          { x: spawnPos.current[0], y: spawnPos.current[1] + 2, z: spawnPos.current[2] },
+          true
+        );
+        apiRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
       }
     };
-    const handleKeyUp = (e: KeyboardEvent) => {
-      keysPressed.current.delete(e.key.toLowerCase());
-    };
     window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
+
     return () => {
+      cleanup();
       window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
     };
   }, [game.isGameOver]);
 
@@ -80,18 +79,14 @@ export default function Player({
     // Check if on floor
     isOnFloor.current = Math.abs(rbVel.y) < 0.5 && rbPos.y < spawnPos.current[1] + 1.5;
 
-    const keys = keysPressed.current;
-    let moveX = 0;
-    let moveZ = 0;
-
-    if (keys.has('w') || keys.has('arrowup')) moveZ -= 1;
-    if (keys.has('s') || keys.has('arrowdown')) moveZ += 1;
-    if (keys.has('a') || keys.has('arrowleft')) moveX -= 1;
-    if (keys.has('d') || keys.has('arrowright')) moveX += 1;
+    // ─── Read from shared input state ───
+    const input = getInputState();
+    let moveX = input.moveX;
+    let moveZ = input.moveZ;
 
     const isMoving = moveX !== 0 || moveZ !== 0;
     const len = Math.sqrt(moveX * moveX + moveZ * moveZ);
-    if (len > 0) {
+    if (len > 1) {
       moveX /= len;
       moveZ /= len;
     }
@@ -119,10 +114,12 @@ export default function Player({
       true
     );
 
-    // Jump
-    if ((keys.has(' ') || keys.has('space')) && isOnFloor.current) {
+    // Jump (edge-triggered: only on rising edge)
+    const currentJump = input.jump;
+    if (currentJump && !lastJump.current && isOnFloor.current) {
       apiRef.current.setLinvel({ x: rbVel.x, y: JUMP_FORCE, z: rbVel.z }, true);
     }
+    lastJump.current = currentJump;
 
     // Rotate player to face movement direction
     if (isMoving) {

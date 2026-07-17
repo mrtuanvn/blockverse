@@ -5,6 +5,7 @@ import { RigidBody, CuboidCollider, useRapier } from '@react-three/rapier';
 import { Text } from '@react-three/drei';
 import * as THREE from 'three';
 import { useGameStore } from '@/game/store';
+import { getInputState } from '@/game/hooks/useInputState';
 import Sky from '@/game/components/Sky';
 import Lighting from '@/game/components/Lighting';
 import Player from '@/game/components/Player';
@@ -1315,10 +1316,13 @@ export default function BattleScene() {
     [heal, setNotification],
   );
 
-  // Player attack (E key)
+  // Player attack (E key or mobile attack button)
+  const attackRafRef = useRef<number>(0);
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() === 'e' && !game.isGameOver && wavePhaseRef.current === 'fighting') {
+    let lastAttack = false;
+    const check = () => {
+      const input = getInputState();
+      if (input.attack && !lastAttack && !game.isGameOver && wavePhaseRef.current === 'fighting') {
         punchHitSet.clear();
         setPunchOrigin([
           playerWorld.position.x,
@@ -1329,9 +1333,11 @@ export default function BattleScene() {
         setPunchActive(true);
         setTimeout(() => setPunchActive(false), 300);
       }
+      lastAttack = input.attack;
+      attackRafRef.current = requestAnimationFrame(check);
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    attackRafRef.current = requestAnimationFrame(check);
+    return () => cancelAnimationFrame(attackRafRef.current);
   }, [game.isGameOver]);
 
   // Main game loop

@@ -18,6 +18,7 @@ const BuilderScene = dynamic(() => import('@/game/scenes/BuilderScene'), { ssr: 
 const HUD = dynamic(() => import('@/game/components/HUD'), { ssr: false });
 const Notification = dynamic(() => import('@/game/components/Notification'), { ssr: false });
 const SceneTransition = dynamic(() => import('@/game/components/SceneTransition'), { ssr: false });
+const MobileControls = dynamic(() => import('@/game/components/MobileControls'), { ssr: false });
 
 const SCENE_COMPONENTS: Record<GameScene, React.LazyExoticComponent<() => JSX.Element>> = {
   lobby: LobbyScene,
@@ -166,6 +167,7 @@ function GameCanvas() {
       <HUD />
       <Notification />
       <SceneTransition />
+      <MobileControls />
 
       {/* Scene-specific overlays for builder (toolbar handled inside BuilderScene) */}
       {currentScene === 'lobby' && <LobbyInfoBar />}

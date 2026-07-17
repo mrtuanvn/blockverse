@@ -1,2 +1,16 @@
-skills/
 node_modules/
+.next/
+.env
+.env.local
+*.log
+db/
+download/
+.zscripts/
+mini-services/
+examples/
+.DS_Store
+*.tsbuildinfo
+.vercel
+skills/
+dev.log
+server.log

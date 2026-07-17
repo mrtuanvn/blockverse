@@ -1,0 +1,1021 @@
+     1→'use client';
+     2→import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+     3→import { useFrame, useThree } from '@react-three/fiber';
+     4→import { RigidBody, CuboidCollider, type RapierRigidBody } from '@react-three/rapier';
+     5→import { Text, Float } from '@react-three/drei';
+     6→import * as THREE from 'three';
+     7→import { useGameStore } from '@/game/store';
+     8→import Sky from '@/game/components/Sky';
+     9→import Lighting from '@/game/components/Lighting';
+    10→import Player from '@/game/components/Player';
+    11→import ThirdPersonCamera from '@/game/components/ThirdPersonCamera';
+    12→import CollectibleItem from '@/game/components/CollectibleItem';
+    13→import ParticleEffect from '@/game/components/ParticleEffect';
+    14→
+    15→// ===== Platform Data Types =====
+    16→
+    17→interface PlatformData {
+    18→  id: number;
+    19→  pos: [number, number, number];
+    20→  size: [number, number, number];
+    21→  type: 'static' | 'moving' | 'falling' | 'bouncy' | 'ice' | 'narrow';
+    22→  color: string;
+    23→  moveAxis?: 'x' | 'y' | 'z';
+    24→  moveRange?: number;
+    25→  moveSpeed?: number;
+    26→}
+    27→
+    28→// ===== 35 Platforms: winding path from z=0 to z=120, x between -8 and +8 =====
+    29→
+    30→const PLATFORM_DATA: PlatformData[] = [
+    31→  // === Section 1 (0-4): Static green — easy intro ===
+    32→  { id: 0, pos: [0, 0, 0], size: [5, 1, 5], type: 'static', color: '#22c55e' },
+    33→  { id: 1, pos: [4, 0.5, 4], size: [3, 1, 3], type: 'static', color: '#22c55e' },
+    34→  { id: 2, pos: [7, 1, 8], size: [3, 1, 3], type: 'static', color: '#22c55e' },
+    35→  { id: 3, pos: [3, 0.5, 12], size: [3, 1, 3], type: 'static', color: '#22c55e' },
+    36→  { id: 4, pos: [-1, 0, 16], size: [3, 1, 3], type: 'static', color: '#22c55e' },
+    37→
+    38→  // === Section 2 (5-9): Mix static + moving orange ===
+    39→  { id: 5, pos: [-5, 0.5, 19], size: [3, 1, 3], type: 'static', color: '#22c55e' },
+    40→  { id: 6, pos: [-8, 1, 23], size: [3, 1, 3], type: 'moving', color: '#f97316', moveAxis: 'x', moveRange: 3, moveSpeed: 1 },
+    41→  { id: 7, pos: [-4, 0.5, 27], size: [3, 1, 3], type: 'moving', color: '#f97316', moveAxis: 'x', moveRange: 4, moveSpeed: 1.2 },
+    42→  { id: 8, pos: [1, 1, 30], size: [3, 1, 3], type: 'static', color: '#22c55e' },
+    43→  { id: 9, pos: [5, 0.5, 34], size: [3, 1, 3], type: 'moving', color: '#f97316', moveAxis: 'z', moveRange: 2, moveSpeed: 0.8 },
+    44→
+    45→  // === Section 3 (10-14): Falling red + bouncy cyan ===
+    46→  { id: 10, pos: [2, 0.5, 38], size: [2.5, 1, 2.5], type: 'falling', color: '#ef4444' },
+    47→  { id: 11, pos: [-2, 1.5, 42], size: [2.5, 1, 2.5], type: 'bouncy', color: '#06b6d4' },
+    48→  { id: 12, pos: [-6, 0.5, 45], size: [2.5, 1, 2.5], type: 'falling', color: '#ef4444' },
+    49→  { id: 13, pos: [-3, 2, 49], size: [2.5, 1, 2.5], type: 'bouncy', color: '#06b6d4' },
+    50→  { id: 14, pos: [1, 0, 52], size: [3, 1, 3], type: 'static', color: '#22c55e' },
+    51→
+    52→  // === Section 4 (15-19): Narrow beams yellow + ice lightblue ===
+    53→  { id: 15, pos: [4, 0.5, 55], size: [0.3, 1, 4], type: 'narrow', color: '#eab308' },
+    54→  { id: 16, pos: [4, 1, 59], size: [0.3, 1, 4], type: 'narrow', color: '#eab308' },
+    55→  { id: 17, pos: [1, 0.5, 62], size: [3, 1, 3], type: 'ice', color: '#7dd3fc' },
+    56→  { id: 18, pos: [-3, 0.5, 65], size: [3, 1, 3], type: 'ice', color: '#7dd3fc' },
+    57→  { id: 19, pos: [-6, 1, 68], size: [0.3, 1, 4], type: 'narrow', color: '#eab308' },
+    58→
+    59→  // === Section 5 (20-24): Harder moving + falling combos ===
+    60→  { id: 20, pos: [-3, 0.5, 72], size: [2.5, 1, 2.5], type: 'moving', color: '#f97316', moveAxis: 'x', moveRange: 4, moveSpeed: 1.5 },
+    61→  { id: 21, pos: [1, 1, 75], size: [2.5, 1, 2.5], type: 'falling', color: '#ef4444' },
+    62→  { id: 22, pos: [5, 0.5, 79], size: [2.5, 1, 2.5], type: 'moving', color: '#f97316', moveAxis: 'y', moveRange: 2, moveSpeed: 1 },
+    63→  { id: 23, pos: [2, 1.5, 83], size: [2.5, 1, 2.5], type: 'falling', color: '#ef4444' },
+    64→  { id: 24, pos: [-2, 0.5, 86], size: [2, 1, 2], type: 'moving', color: '#f97316', moveAxis: 'x', moveRange: 5, moveSpeed: 1.8 },
+    65→
+    66→  // === Section 6 (25-29): Mix of all types, harder gaps ===
+    67→  { id: 25, pos: [-6, 0.5, 90], size: [2, 1, 2], type: 'ice', color: '#7dd3fc' },
+    68→  { id: 26, pos: [-2, 1, 93], size: [0.3, 1, 4], type: 'narrow', color: '#eab308' },
+    69→  { id: 27, pos: [3, 0.5, 96], size: [2, 1, 2], type: 'falling', color: '#ef4444' },
+    70→  { id: 28, pos: [7, 1.5, 99], size: [2, 1, 2], type: 'bouncy', color: '#06b6d4' },
+    71→  { id: 29, pos: [4, 0.5, 102], size: [2, 1, 2], type: 'moving', color: '#f97316', moveAxis: 'x', moveRange: 3, moveSpeed: 2 },
+    72→
+    73→  // === Section 7 (30-34): Ultimate challenge + finish platform ===
+    74→  { id: 30, pos: [0, 1, 106], size: [2, 1, 2], type: 'falling', color: '#ef4444' },
+    75→  { id: 31, pos: [-4, 1.5, 109], size: [2, 1, 2], type: 'moving', color: '#f97316', moveAxis: 'y', moveRange: 3, moveSpeed: 1.5 },
+    76→  { id: 32, pos: [-7, 0.5, 112], size: [0.3, 1, 4], type: 'narrow', color: '#eab308' },
+    77→  { id: 33, pos: [-3, 2, 115], size: [2, 1, 2], type: 'bouncy', color: '#06b6d4' },
+    78→  { id: 34, pos: [0, 0, 120], size: [6, 1, 6], type: 'static', color: '#ffd700' },
+    79→];
+    80→
+    81→// ===== Collectibles: 20 coins + 5 gems =====
+    82→
+    83→const COLLECTIBLES = [
+    84→  // Coins (20) — placed on platforms or in gaps
+    85→  { id: 'obby-coin-1', type: 'coin' as const, position: [4, 2.5, 4] as [number, number, number], value: 1, collected: false },
+    86→  { id: 'obby-coin-2', type: 'coin' as const, position: [5.5, 2, 10] as [number, number, number], value: 1, collected: false },
+    87→  { id: 'obby-coin-3', type: 'coin' as const, position: [3, 2.5, 12] as [number, number, number], value: 1, collected: false },
+    88→  { id: 'obby-coin-4', type: 'coin' as const, position: [-5, 2.5, 19] as [number, number, number], value: 1, collected: false },
+    89→  { id: 'obby-coin-5', type: 'coin' as const, position: [-6.5, 2.5, 25] as [number, number, number], value: 1, collected: false },
+    90→  { id: 'obby-coin-6', type: 'coin' as const, position: [1, 2.5, 30] as [number, number, number], value: 1, collected: false },
+    91→  { id: 'obby-coin-7', type: 'coin' as const, position: [2, 2.5, 38] as [number, number, number], value: 1, collected: false },
+    92→  { id: 'obby-coin-8', type: 'coin' as const, position: [-4.5, 2.5, 43.5] as [number, number, number], value: 1, collected: false },
+    93→  { id: 'obby-coin-9', type: 'coin' as const, position: [-3, 3.5, 49] as [number, number, number], value: 1, collected: false },
+    94→  { id: 'obby-coin-10', type: 'coin' as const, position: [1, 2, 52] as [number, number, number], value: 1, collected: false },
+    95→  { id: 'obby-coin-11', type: 'coin' as const, position: [4, 2.5, 57] as [number, number, number], value: 1, collected: false },
+    96→  { id: 'obby-coin-12', type: 'coin' as const, position: [1, 2.5, 62] as [number, number, number], value: 1, collected: false },
+    97→  { id: 'obby-coin-13', type: 'coin' as const, position: [-6, 3, 70] as [number, number, number], value: 1, collected: false },
+    98→  { id: 'obby-coin-14', type: 'coin' as const, position: [-3, 2.5, 72] as [number, number, number], value: 1, collected: false },
+    99→  { id: 'obby-coin-15', type: 'coin' as const, position: [1, 3, 75] as [number, number, number], value: 1, collected: false },
+   100→  { id: 'obby-coin-16', type: 'coin' as const, position: [5, 3, 79] as [number, number, number], value: 1, collected: false },
+   101→  { id: 'obby-coin-17', type: 'coin' as const, position: [-6, 2.5, 90] as [number, number, number], value: 1, collected: false },
+   102→  { id: 'obby-coin-18', type: 'coin' as const, position: [-2, 3, 93] as [number, number, number], value: 1, collected: false },
+   103→  { id: 'obby-coin-19', type: 'coin' as const, position: [3, 2.5, 96] as [number, number, number], value: 1, collected: false },
+   104→  { id: 'obby-coin-20', type: 'coin' as const, position: [4, 2.5, 102] as [number, number, number], value: 1, collected: false },
+   105→
+   106→  // Gems (5) — placed at harder sections
+   107→  { id: 'obby-gem-1', type: 'gem' as const, position: [-8, 3, 23] as [number, number, number], value: 10, collected: false },
+   108→  { id: 'obby-gem-2', type: 'gem' as const, position: [4, 3, 59] as [number, number, number], value: 10, collected: false },
+   109→  { id: 'obby-gem-3', type: 'gem' as const, position: [-2, 3, 86] as [number, number, number], value: 10, collected: false },
+   110→  { id: 'obby-gem-4', type: 'gem' as const, position: [7, 3.5, 99] as [number, number, number], value: 10, collected: false },
+   111→  { id: 'obby-gem-5', type: 'gem' as const, position: [-3, 4, 115] as [number, number, number], value: 10, collected: false },
+   112→];
+   113→
+   114→// ===== Checkpoint Positions (every 10 platforms) =====
+   115→
+   116→const CHECKPOINT_POSITIONS: Array<{ index: number; pos: [number, number, number] }> = [
+   117→  { index: 9, pos: [5, 1.5, 34] },
+   118→  { index: 19, pos: [-6, 2, 68] },
+   119→  { index: 29, pos: [4, 1.5, 102] },
+   120→];
+   121→
+   122→// ===== Decorative Floating Cubes =====
+   123→
+   124→const DECORATIVE_CUBES: Array<{ pos: [number, number, number]; color: string; size: number; speed: number }> = [
+   125→  { pos: [-10, 8, 5], color: '#a855f7', size: 0.6, speed: 0.5 },
+   126→  { pos: [12, 10, 15], color: '#f59e0b', size: 0.5, speed: 0.7 },
+   127→  { pos: [-8, 12, 30], color: '#06b6d4', size: 0.4, speed: 0.6 },
+   128→  { pos: [10, 9, 45], color: '#ef4444', size: 0.7, speed: 0.4 },
+   129→  { pos: [-12, 11, 55], color: '#22c55e', size: 0.5, speed: 0.8 },
+   130→  { pos: [8, 13, 70], color: '#ec4899', size: 0.6, speed: 0.5 },
+   131→  { pos: [-10, 8, 85], color: '#8b5cf6', size: 0.4, speed: 0.9 },
+   132→  { pos: [11, 10, 95], color: '#f97316', size: 0.5, speed: 0.6 },
+   133→  { pos: [-7, 14, 110], color: '#14b8a6', size: 0.6, speed: 0.7 },
+   134→  { pos: [9, 9, 118], color: '#fbbf24', size: 0.5, speed: 0.5 },
+   135→  { pos: [-5, 15, 20], color: '#f472b6', size: 0.3, speed: 1.0 },
+   136→  { pos: [6, 7, 40], color: '#a78bfa', size: 0.4, speed: 0.6 },
+   137→  { pos: [-11, 10, 60], color: '#34d399', size: 0.5, speed: 0.8 },
+   138→  { pos: [13, 12, 80], color: '#fb923c', size: 0.3, speed: 0.5 },
+   139→  { pos: [-9, 11, 100], color: '#60a5fa', size: 0.4, speed: 0.7 },
+   140→  { pos: [5, 16, 50], color: '#c084fc', size: 0.35, speed: 0.9 },
+   141→];
+   142→
+   143→// ===== PlatformRenderer Component =====
+   144→
+   145→function PlatformRenderer({ data }: { data: PlatformData }) {
+   146→  const rbRef = useRef<RapierRigidBody>(null);
+   147→  const triggered = useRef(false);
+   148→  const fallTimer = useRef(0);
+   149→  const groupRef = useRef<THREE.Group>(null);
+   150→  const originalY = data.pos[1];
+   151→  const hasFallen = useRef(false);
+   152→
+   153→  // Moving platform animation
+   154→  useFrame((state, delta) => {
+   155→    if (data.type === 'moving' && rbRef.current) {
+   156→      const t = state.clock.getElapsedTime() * (data.moveSpeed || 1);
+   157→      const offset = Math.sin(t) * (data.moveRange || 2);
+   158→      let x = data.pos[0];
+   159→      let y = data.pos[1];
+   160→      let z = data.pos[2];
+   161→      if (data.moveAxis === 'x') x += offset;
+   162→      else if (data.moveAxis === 'y') y += offset;
+   163→      else if (data.moveAxis === 'z') z += offset;
+   164→      rbRef.current.setTranslation({ x, y, z }, true);
+   165→    }
+   166→
+   167→    // Falling platform animation
+   168→    if (data.type === 'falling' && rbRef.current && triggered.current) {
+   169→      fallTimer.current += delta;
+   170→      if (fallTimer.current > 1) {
+   171→        const elapsed = fallTimer.current - 1;
+   172→        const newY = originalY - elapsed * 20;
+   173→        rbRef.current.setTranslation({ x: data.pos[0], y: newY, z: data.pos[2] }, true);
+   174→        if (newY < originalY - 25) {
+   175→          hasFallen.current = true;
+   176→        }
+   177→      }
+   178→    }
+   179→  });
+   180→
+   181→  const handleFallingCollision = useCallback(
+   182→    (payload: { other: { rigidBodyObject?: THREE.Object3D | null; rigidBody?: RapierRigidBody | null } }) => {
+   183→      if (triggered.current || hasFallen.current) return;
+   184→      const collidingName = payload.other.rigidBodyObject?.name;
+   185→      if (collidingName === 'player-body') {
+   186→        triggered.current = true;
+   187→      }
+   188→    },
+   189→    []
+   190→  );
+   191→
+   192→  const handleBouncyCollision = useCallback(
+   193→    (payload: { other: { rigidBodyObject?: THREE.Object3D | null; rigidBody?: RapierRigidBody | null } }) => {
+   194→      const collidingName = payload.other.rigidBodyObject?.name;
+   195→      if (collidingName === 'player-body') {
+   196→        payload.other.rigidBody?.applyImpulse({ x: 0, y: 12, z: 0 }, true);
+   197→      }
+   198→    },
+   199→    []
+   200→  );
+   201→
+   202→  const halfExtents: [number, number, number] = [
+   203→    data.size[0] / 2,
+   204→    data.size[1] / 2,
+   205→    data.size[2] / 2,
+   206→  ];
+   207→
+   208→  // Determine material props based on type
+   209→  const isIce = data.type === 'ice';
+   210→  const isBouncy = data.type === 'bouncy';
+   211→  const isNarrow = data.type === 'narrow';
+   212→  const isFalling = data.type === 'falling';
+   213→
+   214→  const materialProps: Record<string, unknown> = {
+   215→    color: data.color,
+   216→    roughness: isIce ? 0.1 : isBouncy ? 0.4 : 0.7,
+   217→    metalness: isIce ? 0.3 : isBouncy ? 0.2 : 0.1,
+   218→    ...(isIce ? { transparent: true, opacity: 0.6 } : {}),
+   219→    ...(isBouncy ? { emissive: '#06b6d4', emissiveIntensity: 0.15 } : {}),
+   220→    ...(isFalling ? { emissive: '#ef4444', emissiveIntensity: 0.1 } : {}),
+   221→  };
+   222→
+   223→  // Bouncy platforms have a spring-like visual indicator on top
+   224→  const bouncyIndicator = isBouncy ? (
+   225→    <mesh position={[0, data.size[1] / 2 + 0.05, 0]}>
+   226→      <boxGeometry args={[data.size[0] * 0.8, 0.1, data.size[2] * 0.8]} />
+   227→      <meshStandardMaterial color="#22d3ee" emissive="#06b6d4" emissiveIntensity={0.4} />
+   228→    </mesh>
+   229→  ) : null;
+   230→
+   231→  // Falling platforms have a crack visual indicator
+   232→  const fallingIndicator = isFalling ? (
+   233→    <>
+   234→      <mesh position={[data.size[0] * 0.2, data.size[1] / 2 + 0.02, 0]}>
+   235→        <boxGeometry args={[0.3, 0.05, data.size[2] * 0.6]} />
+   236→        <meshStandardMaterial color="#991b1b" />
+   237→      </mesh>
+   238→      <mesh position={[-data.size[0] * 0.15, data.size[1] / 2 + 0.02, data.size[2] * 0.1]}>
+   239→        <boxGeometry args={[data.size[0] * 0.5, 0.05, 0.2]} />
+   240→        <meshStandardMaterial color="#991b1b" />
+   241→      </mesh>
+   242→    </>
+   243→  ) : null;
+   244→
+   245→  // Narrow platforms have edge glow strips
+   246→  const narrowIndicator = isNarrow ? (
+   247→    <>
+   248→      <mesh position={[0, data.size[1] / 2 + 0.02, 0]}>
+   249→        <boxGeometry args={[0.35, 0.05, data.size[2]]} />
+   250→        <meshStandardMaterial color="#fde047" emissive="#eab308" emissiveIntensity={0.3} />
+   251→      </mesh>
+   252→    </>
+   253→  ) : null;
+   254→
+   255→  // Render based on type
+   256→  if (data.type === 'static' || data.type === 'narrow') {
+   257→    return (
+   258→      <group>
+   259→        <RigidBody type="fixed" name={`platform-${data.id}`} position={data.pos}>
+   260→          <CuboidCollider args={halfExtents} />
+   261→          <mesh castShadow receiveShadow>
+   262→            <boxGeometry args={data.size} />
+   263→            <meshStandardMaterial {...materialProps} />
+   264→          </mesh>
+   265→          {narrowIndicator}
+   266→        </RigidBody>
+   267→      </group>
+   268→    );
+   269→  }
+   270→
+   271→  if (data.type === 'ice') {
+   272→    return (
+   273→      <group>
+   274→        <RigidBody type="fixed" name={`platform-${data.id}`} position={data.pos}>
+   275→          <CuboidCollider args={halfExtents} friction={0.05} />
+   276→          <mesh castShadow receiveShadow>
+   277→            <boxGeometry args={data.size} />
+   278→            <meshStandardMaterial {...materialProps} />
+   279→          </mesh>
+   280→        </RigidBody>
+   281→        {/* Ice shimmer particles */}
+   282→        <IceShimmer position={data.pos} size={data.size} />
+   283→      </group>
+   284→    );
+   285→  }
+   286→
+   287→  if (data.type === 'moving') {
+   288→    return (
+   289→      <group>
+   290→        <RigidBody
+   291→          ref={rbRef}
+   292→          type="kinematicPosition"
+   293→          name={`platform-${data.id}`}
+   294→          position={data.pos}
+   295→        >
+   296→          <CuboidCollider args={halfExtents} />
+   297→          <mesh castShadow receiveShadow>
+   298→            <boxGeometry args={data.size} />
+   299→            <meshStandardMaterial {...materialProps} emissive="#f97316" emissiveIntensity={0.15} />
+   300→          </mesh>
+   301→        </RigidBody>
+   302→      </group>
+   303→    );
+   304→  }
+   305→
+   306→  if (data.type === 'falling') {
+   307→    return (
+   308→      <group>
+   309→        <RigidBody
+   310→          ref={rbRef}
+   311→          type="kinematicPosition"
+   312→          name={`platform-${data.id}`}
+   313→          position={data.pos}
+   314→          onCollisionEnter={handleFallingCollision}
+   315→        >
+   316→          <CuboidCollider args={halfExtents} />
+   317→          <mesh castShadow receiveShadow>
+   318→            <boxGeometry args={data.size} />
+   319→            <meshStandardMaterial {...materialProps} />
+   320→          </mesh>
+   321→          {fallingIndicator}
+   322→        </RigidBody>
+   323→      </group>
+   324→    );
+   325→  }
+   326→
+   327→  if (data.type === 'bouncy') {
+   328→    return (
+   329→      <group>
+   330→        <RigidBody
+   331→          type="fixed"
+   332→          name={`platform-${data.id}`}
+   333→          position={data.pos}
+   334→          restitution={1.5}
+   335→          onCollisionEnter={handleBouncyCollision}
+   336→        >
+   337→          <CuboidCollider args={halfExtents} />
+   338→          <mesh castShadow receiveShadow>
+   339→            <boxGeometry args={data.size} />
+   340→            <meshStandardMaterial {...materialProps} />
+   341→          </mesh>
+   342→          {bouncyIndicator}
+   343→        </RigidBody>
+   344→      </group>
+   345→    );
+   346→  }
+   347→
+   348→  return null;
+   349→}
+   350→
+   351→// ===== Ice Shimmer Effect =====
+   352→
+   353→function IceShimmer({ position, size }: { position: [number, number, number]; size: [number, number, number] }) {
+   354→  const ref = useRef<THREE.Mesh>(null);
+   355→
+   356→  useFrame((state) => {
+   357→    if (!ref.current) return;
+   358→    const t = state.clock.getElapsedTime();
+   359→    const mat = ref.current.material as THREE.MeshStandardMaterial;
+   360→    mat.opacity = 0.15 + Math.sin(t * 2 + position[0]) * 0.1;
+   361→  });
+   362→
+   363→  return (
+   364→    <mesh ref={ref} position={[position[0], position[1] + size[1] / 2 + 0.03, position[2]]} rotation={[-Math.PI / 2, 0, 0]}>
+   365→      <planeGeometry args={[size[0] * 0.9, size[2] * 0.9]} />
+   366→      <meshStandardMaterial
+   367→        color="#e0f2fe"
+   368→        emissive="#bae6fd"
+   369→        emissiveIntensity={0.3}
+   370→        transparent
+   371→        opacity={0.2}
+   372→        side={THREE.DoubleSide}
+   373→      />
+   374→    </mesh>
+   375→  );
+   376→}
+   377→
+   378→// ===== Checkpoint Component =====
+   379→
+   380→function CheckpointComponent({ position, index }: { position: [number, number, number]; index: number }) {
+   381→  const pillarRef = useRef<THREE.Group>(null);
+   382→  const ringRef = useRef<THREE.Mesh>(null);
+   383→  const lightRef = useRef<THREE.PointLight>(null);
+   384→  const { scene } = useThree();
+   385→  const lastCheckpoint = useRef(-1);
+   386→  const setNotification = useGameStore((s) => s.setNotification);
+   387→  const checkpointReached = useRef(false);
+   388→
+   389→  useFrame((state) => {
+   390→    if (!pillarRef.current || !ringRef.current || !lightRef.current) return;
+   391→    const t = state.clock.getElapsedTime();
+   392→
+   393→    // Animate the ring rotation
+   394→    ringRef.current.rotation.y = t * 1.5;
+   395→
+   396→    // Animate the light pulsing
+   397→    lightRef.current.intensity = 3 + Math.sin(t * 2) * 1;
+   398→
+   399→    // Check player distance for checkpoint activation
+   400→    const playerObj = scene.getObjectByName('player-body');
+   401→    if (playerObj) {
+   402→      const playerPos = new THREE.Vector3();
+   403→      playerObj.getWorldPosition(playerPos);
+   404→      const checkpointVec = new THREE.Vector3(position[0], position[1], position[2]);
+   405→      const dist = playerPos.distanceTo(checkpointVec);
+   406→
+   407→      if (dist < 3 && !checkpointReached.current) {
+   408→        checkpointReached.current = true;
+   409→        lastCheckpoint.current = index;
+   410→        setNotification(`Checkpoint ${Math.floor(index / 10) + 1} reached!`);
+   411→      }
+   412→    }
+   413→  });
+   414→
+   415→  return (
+   416→    <group ref={pillarRef} position={position}>
+   417→      {/* Main pillar */}
+   418→      <mesh position={[0, 2, 0]} castShadow>
+   419→        <cylinderGeometry args={[0.2, 0.3, 4, 6]} />
+   420→        <meshStandardMaterial
+   421→          color="#22c55e"
+   422→          emissive="#16a34a"
+   423→          emissiveIntensity={0.4}
+   424→          roughness={0.5}
+   425→          metalness={0.3}
+   426→        />
+   427→      </mesh>
+   428→
+   429→      {/* Glowing orb on top */}
+   430→      <mesh position={[0, 4.3, 0]}>
+   431→        <sphereGeometry args={[0.3, 12, 12]} />
+   432→        <meshStandardMaterial
+   433→          color="#4ade80"
+   434→          emissive="#22c55e"
+   435→          emissiveIntensity={0.8}
+   436→          transparent
+   437→          opacity={0.8}
+   438→        />
+   439→      </mesh>
+   440→
+   441→      {/* Rotating ring */}
+   442→      <mesh ref={ringRef} position={[0, 3, 0]}>
+   443→        <torusGeometry args={[0.6, 0.05, 8, 24]} />
+   444→        <meshStandardMaterial
+   445→          color="#86efac"
+   446→          emissive="#22c55e"
+   447→          emissiveIntensity={0.6}
+   448→        />
+   449→      </mesh>
+   450→
+   451→      {/* Base ring on ground */}
+   452→      <mesh position={[0, 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+   453→        <ringGeometry args={[0.5, 0.8, 24]} />
+   454→        <meshStandardMaterial
+   455→          color="#22c55e"
+   456→          emissive="#16a34a"
+   457→          emissiveIntensity={0.3}
+   458→          transparent
+   459→          opacity={0.5}
+   460→          side={THREE.DoubleSide}
+   461→        />
+   462→      </mesh>
+   463→
+   464→      {/* Point light */}
+   465→      <pointLight
+   466→        ref={lightRef}
+   467→        position={[0, 3, 0]}
+   468→        color="#22c55e"
+   469→        intensity={3}
+   470→        distance={10}
+   471→        decay={2}
+   472→      />
+   473→
+   474→      {/* Checkpoint label */}
+   475→      <Text
+   476→        position={[0, 5.2, 0]}
+   477→        fontSize={0.5}
+   478→        color="#4ade80"
+   479→        anchorX="center"
+   480→        anchorY="middle"
+   481→        outlineWidth={0.02}
+   482→        outlineColor="#166534"
+   483→      >
+   484→        {`CP ${Math.floor(index / 10) + 1}`}
+   485→      </Text>
+   486→    </group>
+   487→  );
+   488→}
+   489→
+   490→// ===== Finish Line Component =====
+   491→
+   492→function FinishLine({ position }: { position: [number, number, number] }) {
+   493→  const { scene } = useThree();
+   494→  const leftPillarRef = useRef<THREE.Mesh>(null);
+   495→  const rightPillarRef = useRef<THREE.Mesh>(null);
+   496→  const beamRef = useRef<THREE.Mesh>(null);
+   497→  const starRef = useRef<THREE.Mesh>(null);
+   498→  const hasWon = useRef(false);
+   499→  const setScore = useGameStore((s) => s.setScore);
+   500→  const submitScore = useGameStore((s) => s.submitScore);
+   501→  const setNotification = useGameStore((s) => s.setNotification);
+   502→  const endGame = useGameStore((s) => s.endGame);
+   503→
+   504→  const pillarHeight = 5;
+   505→  const archWidth = 6;
+   506→  const pillarRadius = 0.3;
+   507→
+   508→  useFrame((state) => {
+   509→    const t = state.clock.getElapsedTime();
+   510→
+   511→    // Animate star rotation and floating
+   512→    if (starRef.current) {
+   513→      starRef.current.rotation.y = t * 2;
+   514→      starRef.current.rotation.z = t * 0.5;
+   515→      starRef.current.position.y = position[1] + pillarHeight + 1 + Math.sin(t * 2) * 0.2;
+   516→    }
+   517→
+   518→    // Animate beam glow
+   519→    if (beamRef.current) {
+   520→      const mat = beamRef.current.material as THREE.MeshStandardMaterial;
+   521→      mat.emissiveIntensity = 0.4 + Math.sin(t * 3) * 0.2;
+   522→    }
+   523→
+   524→    // Check if player reached finish
+   525→    if (hasWon.current) return;
+   526→
+   527→    const playerObj = scene.getObjectByName('player-body');
+   528→    if (playerObj) {
+   529→      const playerPos = new THREE.Vector3();
+   530→      playerObj.getWorldPosition(playerPos);
+   531→      const finishVec = new THREE.Vector3(position[0], position[1] + 1, position[2]);
+   532→      const dist = playerPos.distanceTo(finishVec);
+   533→
+   534→      if (dist < 4) {
+   535→        hasWon.current = true;
+   536→
+   537→        // Calculate score: time-based + coin bonus
+   538→        const gameState = useGameStore.getState();
+   539→        const timePenalty = Math.floor(gameState.game.timeElapsed) * 50;
+   540→        const coinBonus = gameState.game.coins * 50;
+   541→        const scoreBonus = gameState.game.score;
+   542→        const finalScore = Math.max(100, 10000 - timePenalty + coinBonus + scoreBonus);
+   543→
+   544→        setScore(finalScore);
+   545→        submitScore('obby', finalScore, gameState.game.timeElapsed);
+   546→        setNotification('You Win!');
+   547→        setTimeout(() => {
+   548→          endGame();
+   549→        }, 500);
+   550→      }
+   551→    }
+   552→  });
+   553→
+   554→  const goldMaterial = (
+   555→    <meshStandardMaterial
+   556→      color="#ffd700"
+   557→      emissive="#f59e0b"
+   558→      emissiveIntensity={0.4}
+   559→      roughness={0.3}
+   560→      metalness={0.7}
+   561→    />
+   562→  );
+   563→
+   564→  return (
+   565→    <group position={position}>
+   566→      {/* Left pillar */}
+   567→      <mesh
+   568→        ref={leftPillarRef}
+   569→        position={[-archWidth / 2, pillarHeight / 2, 0]}
+   570→        castShadow
+   571→      >
+   572→        <boxGeometry args={[pillarRadius * 2, pillarHeight, pillarRadius * 2]} />
+   573→        <meshStandardMaterial
+   574→          color="#ffd700"
+   575→          emissive="#f59e0b"
+   576→          emissiveIntensity={0.4}
+   577→          roughness={0.3}
+   578→          metalness={0.7}
+   579→        />
+   580→      </mesh>
+   581→
+   582→      {/* Left pillar capital */}
+   583→      <mesh position={[-archWidth / 2, pillarHeight + 0.25, 0]} castShadow>
+   584→        <boxGeometry args={[pillarRadius * 2.5, 0.5, pillarRadius * 2.5]} />
+   585→        {goldMaterial}
+   586→      </mesh>
+   587→
+   588→      {/* Right pillar */}
+   589→      <mesh
+   590→        ref={rightPillarRef}
+   591→        position={[archWidth / 2, pillarHeight / 2, 0]}
+   592→        castShadow
+   593→      >
+   594→        <boxGeometry args={[pillarRadius * 2, pillarHeight, pillarRadius * 2]} />
+   595→        <meshStandardMaterial
+   596→          color="#ffd700"
+   597→          emissive="#f59e0b"
+   598→          emissiveIntensity={0.4}
+   599→          roughness={0.3}
+   600→          metalness={0.7}
+   601→        />
+   602→      </mesh>
+   603→
+   604→      {/* Right pillar capital */}
+   605→      <mesh position={[archWidth / 2, pillarHeight + 0.25, 0]} castShadow>
+   606→        <boxGeometry args={[pillarRadius * 2.5, 0.5, pillarRadius * 2.5]} />
+   607→        {goldMaterial}
+   608→      </mesh>
+   609→
+   610→      {/* Crossbeam (横梁) */}
+   611→      <mesh
+   612→        ref={beamRef}
+   613→        position={[0, pillarHeight + 0.5, 0]}
+   614→        castShadow
+   615→      >
+   616→        <boxGeometry args={[archWidth + pillarRadius * 2, 0.4, 0.4]} />
+   617→        <meshStandardMaterial
+   618→          color="#ffd700"
+   619→          emissive="#fbbf24"
+   620→          emissiveIntensity={0.4}
+   621→          roughness={0.2}
+   622→          metalness={0.8}
+   623→        />
+   624→      </mesh>
+   625→
+   626→      {/* Second decorative beam */}
+   627→      <mesh position={[0, pillarHeight + 0.1, 0]} castShadow>
+   628→        <boxGeometry args={[archWidth + pillarRadius, 0.15, 0.5]} />
+   629→        <meshStandardMaterial
+   630→          color="#fde68a"
+   631→          emissive="#f59e0b"
+   632→          emissiveIntensity={0.3}
+   633→          roughness={0.4}
+   634→          metalness={0.5}
+   635→        />
+   636→      </mesh>
+   637→
+   638→      {/* Star on top */}
+   639→      <mesh ref={starRef} position={[0, pillarHeight + 1, 0]} castShadow>
+   640→        <octahedronGeometry args={[0.5, 0]} />
+   641→        <meshStandardMaterial
+   642→          color="#fef08a"
+   643→          emissive="#fbbf24"
+   644→          emissiveIntensity={0.8}
+   645→          roughness={0.2}
+   646→          metalness={0.5}
+   647→        />
+   648→      </mesh>
+   649→
+   650→      {/* Finish text */}
+   651→      <Text
+   652→        position={[0, pillarHeight + 2.2, 0]}
+   653→        fontSize={0.8}
+   654→        color="#ffd700"
+   655→        anchorX="center"
+   656→        anchorY="middle"
+   657→        outlineWidth={0.04}
+   658→        outlineColor="#92400e"
+   659→      >
+   660→        {'FINISH'}
+   661→      </Text>
+   662→
+   663→      {/* Finish area lights */}
+   664→      <pointLight
+   665→        position={[-archWidth / 2, pillarHeight / 2, 0]}
+   666→        color="#ffd700"
+   667→        intensity={5}
+   668→        distance={8}
+   669→        decay={2}
+   670→      />
+   671→      <pointLight
+   672→        position={[archWidth / 2, pillarHeight / 2, 0]}
+   673→        color="#ffd700"
+   674→        intensity={5}
+   675→        distance={8}
+   676→        decay={2}
+   677→      />
+   678→      <pointLight
+   679→        position={[0, pillarHeight + 1, 0]}
+   680→        color="#fef08a"
+   681→        intensity={4}
+   682→        distance={12}
+   683→        decay={2}
+   684→      />
+   685→
+   686→      {/* Ground glow ring */}
+   687→      <mesh position={[0, 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+   688→        <ringGeometry args={[2.5, 3.5, 32]} />
+   689→        <meshStandardMaterial
+   690→          color="#ffd700"
+   691→          emissive="#f59e0b"
+   692→          emissiveIntensity={0.3}
+   693→          transparent
+   694→          opacity={0.4}
+   695→          side={THREE.DoubleSide}
+   696→        />
+   697→      </mesh>
+   698→    </group>
+   699→  );
+   700→}
+   701→
+   702→// ===== Decorative Floating Cube =====
+   703→
+   704→function DecorativeCube({ pos, color, size, speed }: { pos: [number, number, number]; color: string; size: number; speed: number }) {
+   705→  const ref = useRef<THREE.Mesh>(null);
+   706→
+   707→  useFrame((state) => {
+   708→    if (!ref.current) return;
+   709→    const t = state.clock.getElapsedTime();
+   710→    ref.current.rotation.x = t * speed * 0.5;
+   711→    ref.current.rotation.y = t * speed * 0.7;
+   712→    ref.current.rotation.z = t * speed * 0.3;
+   713→    ref.current.position.y = pos[1] + Math.sin(t * speed + pos[0] * 0.5) * 0.5;
+   714→    ref.current.position.x = pos[0] + Math.sin(t * speed * 0.3) * 0.3;
+   715→  });
+   716→
+   717→  return (
+   718→    <Float speed={speed * 2} rotationIntensity={0.3} floatIntensity={0.3}>
+   719→      <mesh ref={ref} position={pos} castShadow>
+   720→        <boxGeometry args={[size, size, size]} />
+   721→        <meshStandardMaterial
+   722→          color={color}
+   723→          emissive={color}
+   724→          emissiveIntensity={0.3}
+   725→          metalness={0.5}
+   726→          roughness={0.3}
+   727→          transparent
+   728→          opacity={0.7}
+   729→        />
+   730→      </mesh>
+   731→    </Float>
+   732→  );
+   733→}
+   734→
+   735→// ===== Start Platform Sign =====
+   736→
+   737→function StartSign() {
+   738→  const ref = useRef<THREE.Group>(null);
+   739→
+   740→  useFrame((state) => {
+   741→    if (!ref.current) return;
+   742→    const t = state.clock.getElapsedTime();
+   743→    ref.current.position.y = 2.5 + Math.sin(t * 1.5) * 0.3;
+   744→  });
+   745→
+   746→  return (
+   747→    <group ref={ref} position={[0, 2.5, -2]}>
+   748→      <Text
+   749→        fontSize={0.6}
+   750→        color="#fbbf24"
+   751→        anchorX="center"
+   752→        anchorY="middle"
+   753→        outlineWidth={0.03}
+   754→        outlineColor="#92400e"
+   755→      >
+   756→        {'OBBY RUNNER'}
+   757→      </Text>
+   758→      <Text
+   759→        position={[0, -0.8, 0]}
+   760→        fontSize={0.3}
+   761→        color="#fef3c7"
+   762→        anchorX="center"
+   763→        anchorY="middle"
+   764→        outlineWidth={0.02}
+   765→        outlineColor="#78350f"
+   766→      >
+   767→        {'Reach the golden arch!'}
+   768→      </Text>
+   769→    </group>
+   770→  );
+   771→}
+   772→
+   773→// ===== Void Below Indicator =====
+   774→
+   775→function VoidBelow() {
+   776→  return (
+   777→    <group position={[0, -30, 60]}>
+   778→      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+   779→        <planeGeometry args={[100, 300]} />
+   780→        <meshStandardMaterial
+   781→          color="#0a0a1a"
+   782→          emissive="#1a0a2e"
+   783→          emissiveIntensity={0.1}
+   784→          roughness={1}
+   785→        />
+   786→      </mesh>
+   787→    </group>
+   788→  );
+   789→}
+   790→
+   791→// ===== Section Labels =====
+   792→
+   793→function SectionLabel({ position, text, color }: { position: [number, number, number]; text: string; color: string }) {
+   794→  const ref = useRef<THREE.Group>(null);
+   795→
+   796→  useFrame((state) => {
+   797→    if (!ref.current) return;
+   798→    const t = state.clock.getElapsedTime();
+   799→    ref.current.position.y = position[1] + Math.sin(t * 0.8 + position[2] * 0.1) * 0.2;
+   800→  });
+   801→
+   802→  return (
+   803→    <group ref={ref} position={position}>
+   804→      <Text
+   805→        fontSize={0.35}
+   806→        color={color}
+   807→        anchorX="center"
+   808→        anchorY="middle"
+   809→        outlineWidth={0.02}
+   810→        outlineColor="#000000"
+   811→      >
+   812→        {text}
+   813→      </Text>
+   814→    </group>
+   815→  );
+   816→}
+   817→
+   818→// ===== ObbyWorld Component =====
+   819→
+   820→function ObbyWorld() {
+   821→  const { scene } = useThree();
+   822→  const setTime = useGameStore((s) => s.setTime);
+   823→  const isPaused = useGameStore((s) => s.game.isPaused);
+   824→  const isGameOver = useGameStore((s) => s.game.isGameOver);
+   825→  const [collectedItems, setCollectedItems] = useState<Set<string>>(new Set());
+   826→
+   827→  const timeRef = useRef(0);
+   828→  const timerAccum = useRef(0);
+   829→  const lastCheckpoint = useRef<[number, number, number]>([0, 3, 0]);
+   830→
+   831→  // Timer: increment timeElapsed using useFrame
+   832→  useFrame((_, delta) => {
+   833→    if (!isPaused && !isGameOver) {
+   834→      timeRef.current += delta;
+   835→      timerAccum.current += delta;
+   836→      // Update store time every ~100ms to avoid excessive re-renders
+   837→      if (timerAccum.current >= 0.1) {
+   838→        timerAccum.current = 0;
+   839→        setTime(Math.round(timeRef.current * 10) / 10);
+   840→      }
+   841→    }
+   842→  });
+   843→
+   844→  // Handle collectible collection
+   845→  const handleCollect = useCallback((item: { id: string; type: string; position: [number, number, number]; value: number; collected: boolean }) => {
+   846→    setCollectedItems((prev) => new Set(prev).add(item.id));
+   847→  }, []);
+   848→
+   849→  // Finish line position
+   850→  const finishPosition: [number, number, number] = [0, 0.5, 120];
+   851→
+   852→  // Section label data
+   853→  const sectionLabels = useMemo(() => [
+   854→    { position: [-3, 4, 10] as [number, number, number], text: 'Easy Start', color: '#86efac' },
+   855→    { position: [6, 4, 27] as [number, number, number], text: 'Moving Platforms!', color: '#fdba74' },
+   856→    { position: [-4, 5, 43] as [number, number, number], text: 'Watch Out Below!', color: '#fca5a5' },
+   857→    { position: [4, 4, 58] as [number, number, number], text: 'Narrow & Icy!', color: '#bae6fd' },
+   858→    { position: [-4, 5, 79] as [number, number, number], text: 'Harder Combos!', color: '#fdba74' },
+   859→    { position: [4, 5, 96] as [number, number, number], text: 'Mixed Madness!', color: '#f9a8d4' },
+   860→    { position: [-3, 6, 112] as [number, number, number], text: 'FINAL CHALLENGE!', color: '#fde047' },
+   861→  ], []);
+   862→
+   863→  return (
+   864→    <>
+   865→      {/* Fog for atmosphere */}
+   866→      <fog attach="fog" args={['#1a1a2e', 30, 80]} />
+   867→
+   868→      {/* Void below — dark abyss */}
+   869→      <VoidBelow />
+   870→
+   871→      {/* Start sign */}
+   872→      <StartSign />
+   873→
+   874→      {/* Section labels */}
+   875→      {sectionLabels.map((label, i) => (
+   876→        <SectionLabel key={`section-label-${i}`} position={label.position} text={label.text} color={label.color} />
+   877→      ))}
+   878→
+   879→      {/* Render all 35 platforms */}
+   880→      {PLATFORM_DATA.map((platform) => (
+   881→        <PlatformRenderer key={`platform-${platform.id}`} data={platform} />
+   882→      ))}
+   883→
+   884→      {/* Render collectibles */}
+   885→      {COLLECTIBLES.map((item) => (
+   886→        <CollectibleItem
+   887→          key={item.id}
+   888→          id={item.id}
+   889→          type={item.type}
+   890→          position={item.position}
+   891→          value={item.value}
+   892→          collected={collectedItems.has(item.id)}
+   893→          onCollect={handleCollect}
+   894→        />
+   895→      ))}
+   896→
+   897→      {/* Checkpoints every 10 platforms */}
+   898→      {CHECKPOINT_POSITIONS.map((cp) => (
+   899→        <CheckpointComponent
+   900→          key={`checkpoint-${cp.index}`}
+   901→          position={cp.pos}
+   902→          index={cp.index}
+   903→        />
+   904→      ))}
+   905→
+   906→      {/* Finish line golden arch */}
+   907→      <FinishLine position={finishPosition} />
+   908→
+   909→      {/* Decorative floating cubes */}
+   910→      {DECORATIVE_CUBES.map((cube, i) => (
+   911→        <DecorativeCube
+   912→          key={`deco-cube-${i}`}
+   913→          pos={cube.pos}
+   914→          color={cube.color}
+   915→          size={cube.size}
+   916→          speed={cube.speed}
+   917→        />
+   918→      ))}
+   919→
+   920→      {/* Side guide rails (subtle visual markers along the path) */}
+   921→      <GuideRails />
+   922→
+   923→      {/* Ambient particles along the course */}
+   924→      <ObbyParticles />
+   925→    </>
+   926→  );
+   927→}
+   928→
+   929→// ===== Guide Rails =====
+   930→
+   931→function GuideRails() {
+   932→  const railPositions = useMemo(() => {
+   933→    const rails: Array<{ pos: [number, number, number]; length: number }> = [];
+   934→    for (let z = 0; z <= 120; z += 15) {
+   935→      rails.push({ pos: [-14, 3, z], length: 12 });
+   936→      rails.push({ pos: [14, 3, z], length: 12 });
+   937→    }
+   938→    return rails;
+   939→  }, []);
+   940→
+   941→  return (
+   942→    <>
+   943→      {railPositions.map((rail, i) => (
+   944→        <mesh key={`rail-${i}`} position={rail.pos}>
+   945→          <boxGeometry args={[0.1, 0.1, rail.length]} />
+   946→          <meshStandardMaterial
+   947→            color="#6b7280"
+   948→            emissive="#4b5563"
+   949→            emissiveIntensity={0.2}
+   950→            transparent
+   951→            opacity={0.3}
+   952→          />
+   953→        </mesh>
+   954→      ))}
+   955→    </>
+   956→  );
+   957→}
+   958→
+   959→// ===== Ambient Particles Along Course =====
+   960→
+   961→function ObbyParticles() {
+   962→  const count = 60;
+   963→  const refs = useRef<(THREE.Mesh | null)[]>([]);
+   964→  const setRef = useCallback((el: THREE.Mesh | null, idx: number) => {
+   965→    refs.current[idx] = el;
+   966→  }, []);
+   967→
+   968→  const particles = useMemo(
+   969→    () =>
+   970→      Array.from({ length: count }, () => ({
+   971→        x: (Math.random() - 0.5) * 30,
+   972→        y: 2 + Math.random() * 12,
+   973→        z: Math.random() * 130,
+   974→        speed: 0.2 + Math.random() * 0.6,
+   975→        offset: Math.random() * Math.PI * 2,
+   976→        size: 0.03 + Math.random() * 0.05,
+   977→        color: ['#fef3c7', '#e0f2fe', '#fce7f3', '#d1fae5', '#fde68a'][Math.floor(Math.random() * 5)],
+   978→      })),
+   979→    [],
+   980→  );
+   981→
+   982→  useFrame((state) => {
+   983→    const t = state.clock.getElapsedTime();
+   984→    refs.current.forEach((mesh, i) => {
+   985→      if (!mesh) return;
+   986→      const p = particles[i];
+   987→      mesh.position.y = p.y + Math.sin(t * p.speed + p.offset) * 0.6;
+   988→      mesh.position.x = p.x + Math.sin(t * p.speed * 0.4 + p.offset) * 0.4;
+   989→      mesh.rotation.y = t * p.speed * 0.5;
+   990→    });
+   991→  });
+   992→
+   993→  return (
+   994→    <>
+   995→      {particles.map((p, i) => (
+   996→        <mesh
+   997→          key={`obby-particle-${i}`}
+   998→          ref={(el) => setRef(el, i)}
+   999→          position={[p.x, p.y, p.z]}
+  1000→        >
+  1001→          <sphereGeometry args={[p.size, 4, 4]} />
+  1002→          <meshBasicMaterial color={p.color} transparent opacity={0.5} />
+  1003→        </mesh>
+  1004→      ))}
+  1005→    </>
+  1006→  );
+  1007→}
+  1008→
+  1009→// ===== Main ObbyScene Export =====
+  1010→
+  1011→export default function ObbyScene() {
+  1012→  return (
+  1013→    <>
+  1014→      <Sky />
+  1015→      <Lighting />
+  1016→      <Player position={[0, 3, 0]} />
+  1017→      <ThirdPersonCamera />
+  1018→      <ObbyWorld />
+  1019→    </>
+  1020→  );
+  1021→}

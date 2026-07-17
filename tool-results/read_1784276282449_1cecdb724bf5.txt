@@ -1,0 +1,737 @@
+     1→     1→'use client';
+     2→     2→
+     3→     3→import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+     4→     4→import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
+     5→     5→import { RigidBody, CuboidCollider } from '@react-three/rapier';
+     6→     6→import { Text, Grid, OrbitControls, Edges, Html } from '@react-three/drei';
+     7→     7→import * as THREE from 'three';
+     8→     8→import { useGameStore } from '@/game/store';
+     9→     9→import Sky from '@/game/components/Sky';
+    10→    10→import Lighting from '@/game/components/Lighting';
+    11→    11→import Ground from '@/game/components/Ground';
+    12→    12→import type { Block } from '@/game/types';
+    13→    13→
+    14→    14→// ============================================================
+    15→    15→// Constants
+    16→    16→// ============================================================
+    17→    17→
+    18→    18→const SOLID_COLORS = [
+    19→    19→  { name: 'Red', value: '#ef4444' },
+    20→    20→  { name: 'Blue', value: '#3b82f6' },
+    21→    21→  { name: 'Green', value: '#22c55e' },
+    22→    22→  { name: 'Yellow', value: '#eab308' },
+    23→    23→  { name: 'Orange', value: '#f97316' },
+    24→    24→  { name: 'Purple', value: '#a855f7' },
+    25→    25→  { name: 'White', value: '#f8fafc' },
+    26→    26→  { name: 'Black', value: '#1e293b' },
+    27→    27→  { name: 'Pink', value: '#ec4899' },
+    28→    28→  { name: 'Cyan', value: '#06b6d4' },
+    29→    29→];
+    30→    30→
+    31→    31→const BLOCK_TYPES = [
+    32→    32→  { name: 'Normal', value: 'normal' as const },
+    33→    33→  { name: 'Wood', value: 'wood' as const },
+    34→    34→  { name: 'Stone', value: 'stone' as const },
+    35→    35→  { name: 'Metal', value: 'metal' as const },
+    36→    36→  { name: 'Glass', value: 'glass' as const },
+    37→    37→];
+    38→    38→
+    39→    39→const ACHIEVEMENT_MILESTONES = [10, 25, 50, 100];
+    40→    40→
+    41→    41→// ============================================================
+    42→    42→// Shared Wood Texture (singleton canvas texture)
+    43→    43→// ============================================================
+    44→    44→
+    45→    45→let _woodTexture: THREE.CanvasTexture | null = null;
+    46→    46→
+    47→    47→function getWoodTexture(): THREE.CanvasTexture {
+    48→    48→  if (_woodTexture) return _woodTexture;
+    49→    49→
+    50→    50→  const size = 128;
+    51→    51→  const canvas = document.createElement('canvas');
+    52→    52→  canvas.width = size;
+    53→    53→  canvas.height = size;
+    54→    54→  const ctx = canvas.getContext('2d')!;
+    55→    55→
+    56→    56→  // Base brown fill
+    57→    57→  ctx.fillStyle = '#92400e';
+    58→    58→  ctx.fillRect(0, 0, size, size);
+    59→    59→
+    60→    60→  // Wavy grain lines (darker)
+    61→    61→  ctx.strokeStyle = '#78350f';
+    62→    62→  ctx.lineWidth = 3;
+    63→    63→  for (let y = 0; y < size; y += 10) {
+    64→    64→    ctx.beginPath();
+    65→    65→    ctx.moveTo(0, y);
+    66→    66→    for (let x = 0; x <= size; x += 4) {
+    67→    67→      ctx.lineTo(x, y + Math.sin(x * 0.07 + y * 0.02) * 2);
+    68→    68→    }
+    69→    69→    ctx.stroke();
+    70→    70→  }
+    71→    71→
+    72→    72→  // Straight darker streaks every other line
+    73→    73→  ctx.strokeStyle = '#451a03';
+    74→    74→  ctx.lineWidth = 1;
+    75→    75→  for (let y = 5; y < size; y += 20) {
+    76→    76→    ctx.beginPath();
+    77→    77→    ctx.moveTo(0, y);
+    78→    78→    ctx.lineTo(size, y);
+    79→    79→    ctx.stroke();
+    80→    80→  }
+    81→    81→
+    82→    82→  _woodTexture = new THREE.CanvasTexture(canvas);
+    83→    83→  _woodTexture.wrapS = THREE.RepeatWrapping;
+    84→    84→  _woodTexture.wrapT = THREE.RepeatWrapping;
+    85→    85→  return _woodTexture;
+    86→    86→}
+    87→    87→
+    88→    88→// ============================================================
+    89→    89→// Template: Simple House (floor + 3-high walls + roof + windows)
+    90→    90→// ============================================================
+    91→    91→
+    92→    92→function generateTemplateBlocks(): Block[] {
+    93→    93→  const blocks: Block[] = [];
+    94→    94→
+    95→    95→  const add = (x: number, y: number, z: number, color: string, type: Block['type']) => {
+    96→    96→    blocks.push({
+    97→    97→      id: crypto.randomUUID(),
+    98→    98→      position: [x, y, z] as [number, number, number],
+    99→    99→      size: [1, 1, 1],
+   100→   100→      color,
+   101→   101→      type,
+   102→   102→      placed: true,
+   103→   103→    });
+   104→   104→  };
+   105→   105→
+   106→   106→  // ---- Floor (5 x 5 wood) ----
+   107→   107→  for (let x = -2; x <= 2; x++) {
+   108→   108→    for (let z = -2; z <= 2; z++) {
+   109→   109→      add(x, 0.5, z, '#92400e', 'wood');
+   110→   110→    }
+   111→   111→  }
+   112→   112→
+   113→   113→  // ---- Walls (3 layers, stone, door opening front-center) ----
+   114→   114→  for (let layer = 0; layer < 3; layer++) {
+   115→   115→    const y = layer + 1.5;
+   116→   116→
+   117→   117→    // Front wall (z = -2)
+   118→   118→    for (let x = -2; x <= 2; x++) {
+   119→   119→      if (x === 0 && layer < 2) continue; // door opening
+   120→   120→      add(x, y, -2, '#6b7280', 'stone');
+   121→   121→    }
+   122→   122→    // Back wall (z = 2)
+   123→   123→    for (let x = -2; x <= 2; x++) {
+   124→   124→      add(x, y, 2, '#6b7280', 'stone');
+   125→   125→    }
+   126→   126→    // Left wall (x = -2)
+   127→   127→    for (let z = -1; z <= 1; z++) {
+   128→   128→      add(-2, y, z, '#6b7280', 'stone');
+   129→   129→    }
+   130→   130→    // Right wall (x = 2)
+   131→   131→    for (let z = -1; z <= 1; z++) {
+   132→   132→      add(2, y, z, '#6b7280', 'stone');
+   133→   133→    }
+   134→   134→  }
+   135→   135→
+   136→   136→  // ---- Roof (5 x 5 wood) ----
+   137→   137→  for (let x = -2; x <= 2; x++) {
+   138→   138→    for (let z = -2; z <= 2; z++) {
+   139→   139→      add(x, 4.5, z, '#92400e', 'wood');
+   140→   140→    }
+   141→   141→  }
+   142→   142→
+   143→   143→  // ---- Glass windows ----
+   144→   144→  add(-2, 2.5, 0, '#ffffff', 'glass');
+   145→   145→  add(2, 2.5, 0, '#ffffff', 'glass');
+   146→   146→
+   147→   147→  // ---- Door frame (metal accent) ----
+   148→   148→  add(-1, 0.5, -2, '#9ca3af', 'metal');
+   149→   149→  add(1, 0.5, -2, '#9ca3af', 'metal');
+   150→   150→  add(0, 2.5, -2, '#9ca3af', 'metal');
+   151→   151→
+   152→   152→  return blocks;
+   153→   153→}
+   154→   154→
+   155→   155→// ============================================================
+   156→   156→// PlacedBlock – a single block in the scene
+   157→   157→// ============================================================
+   158→   158→
+   159→   159→interface PlacedBlockProps {
+   160→   160→  block: Block;
+   161→   161→  onClick: (e: ThreeEvent<MouseEvent>) => void;
+   162→   162→}
+   163→   163→
+   164→   164→function BlockMaterial({ block }: { block: Block }) {
+   165→   165→  const woodTex = useMemo(() => getWoodTexture(), []);
+   166→   166→
+   167→   167→  switch (block.type) {
+   168→   168→    case 'wood':
+   169→   169→      return <meshStandardMaterial map={woodTex} roughness={0.8} />;
+   170→   170→    case 'stone':
+   171→   171→      return <meshStandardMaterial color="#6b7280" roughness={1} />;
+   172→   172→    case 'metal':
+   173→   173→      return <meshStandardMaterial color="#9ca3af" metalness={0.8} roughness={0.2} />;
+   174→   174→    case 'glass':
+   175→   175→      return <meshStandardMaterial color="#ffffff" transparent opacity={0.4} />;
+   176→   176→    case 'normal':
+   177→   177→    default:
+   178→   178→      return <meshStandardMaterial color={block.color} />;
+   179→   179→  }
+   180→   180→}
+   181→   181→
+   182→   182→function PlacedBlock({ block, onClick }: PlacedBlockProps) {
+   183→   183→  return (
+   184→   184→    <RigidBody type="fixed" position={block.position} colliders={false}>
+   185→   185→      <CuboidCollider args={[0.5, 0.5, 0.5]} />
+   186→   186→      <mesh
+   187→   187→        castShadow
+   188→   188→        receiveShadow
+   189→   189→        userData={{ blockId: block.id }}
+   190→   190→        onClick={onClick}
+   191→   191→      >
+   192→   192→        <boxGeometry args={[1, 1, 1]} />
+   193→   193→        <BlockMaterial block={block} />
+   194→   194→        <Edges threshold={15} color="#000000" />
+   195→   195→      </mesh>
+   196→   196→    </RigidBody>
+   197→   197→  );
+   198→   198→}
+   199→   199→
+   200→   200→// ============================================================
+   201→   201→// Main BuilderScene
+   202→   202→// ============================================================
+   203→   203→
+   204→   204→export default function BuilderScene() {
+   205→   205→  const { raycaster, camera, pointer, gl } = useThree();
+   206→   206→
+   207→   207→  // ---- Zustand store selectors ----
+   208→   208→  const builderBlocks = useGameStore((s) => s.builderBlocks);
+   209→   209→  const addBlock = useGameStore((s) => s.addBlock);
+   210→   210→  const removeBlock = useGameStore((s) => s.removeBlock);
+   211→   211→  const clearBlocks = useGameStore((s) => s.clearBlocks);
+   212→   212→  const selectedColor = useGameStore((s) => s.selectedBlockColor);
+   213→   213→  const selectedType = useGameStore((s) => s.selectedBlockType);
+   214→   214→  const setSelectedColor = useGameStore((s) => s.setSelectedBlockColor);
+   215→   215→  const setSelectedType = useGameStore((s) => s.setSelectedBlockType);
+   216→   216→  const addScore = useGameStore((s) => s.addScore);
+   217→   217→  const score = useGameStore((s) => s.game.score);
+   218→   218→
+   219→   219→  // ---- Refs ----
+   220→   220→  const groundClickRef = useRef<THREE.Mesh>(null);
+   221→   221→  const blocksGroupRef = useRef<THREE.Group>(null);
+   222→   222→  const ghostRef = useRef<THREE.Mesh>(null);
+   223→   223→  const ghostMatRef = useRef<THREE.MeshStandardMaterial>(null);
+   224→   224→  const ghostPos = useRef(new THREE.Vector3(0, -100, 0));
+   225→   225→  const ghostValid = useRef(true);
+   226→   226→  const isDragging = useRef(false);
+   227→   227→  const pointerDownPos = useRef<{ x: number; y: number } | null>(null);
+   228→   228→  const prevMilestones = useRef(new Set<number>());
+   229→   229→  const notifTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+   230→   230→
+   231→   231→  // Mutable refs for use inside callbacks/effects without recreating them
+   232→   232→  const removeBlockRef = useRef(removeBlock);
+   233→   233→  const selectedColorRef = useRef(selectedColor);
+   234→   234→  const selectedTypeRef = useRef(selectedType);
+   235→   235→  const builderBlocksRef = useRef(builderBlocks);
+   236→   236→
+   237→   237→  // Sync refs outside render (React 19 rule)
+   238→   238→  useEffect(() => {
+   239→   239→    removeBlockRef.current = removeBlock;
+   240→   240→  });
+   241→   241→  useEffect(() => {
+   242→   242→    selectedColorRef.current = selectedColor;
+   243→   243→  });
+   244→   244→  useEffect(() => {
+   245→   245→    selectedTypeRef.current = selectedType;
+   246→   246→  });
+   247→   247→  useEffect(() => {
+   248→   248→    builderBlocksRef.current = builderBlocks;
+   249→   249→  });
+   250→   250→
+   251→   251→  // ---- Local notification state ----
+   252→   252→  const [notification, setNotification] = useState<string | null>(null);
+   253→   253→
+   254→   254→  const showNotification = useCallback((msg: string, duration = 2500) => {
+   255→   255→    if (notifTimer.current) clearTimeout(notifTimer.current);
+   256→   256→    setNotification(msg);
+   257→   257→    notifTimer.current = setTimeout(() => setNotification(null), duration);
+   258→   258→  }, []);
+   259→   259→
+   260→   260→  // ================================================================
+   261→   261→  // Ghost Block – updated every frame via raycasting
+   262→   262→  // ================================================================
+   263→   263→  useFrame(() => {
+   264→   264→    raycaster.setFromCamera(pointer, camera);
+   265→   265→
+   266→   266→    // Collect raycast targets
+   267→   267→    const targets: THREE.Object3D[] = [];
+   268→   268→    if (groundClickRef.current) targets.push(groundClickRef.current);
+   269→   269→
+   270→   270→    if (blocksGroupRef.current) {
+   271→   271→      blocksGroupRef.current.traverse((child) => {
+   272→   272→        if ((child as THREE.Mesh).isMesh && (child as THREE.Mesh).userData?.blockId) {
+   273→   273→          targets.push(child);
+   274→   274→        }
+   275→   275→      });
+   276→   276→    }
+   277→   277→
+   278→   278→    if (targets.length === 0) {
+   279→   279→      if (ghostRef.current) ghostRef.current.visible = false;
+   280→   280→      return;
+   281→   281→    }
+   282→   282→
+   283→   283→    const intersections = raycaster.intersectObjects(targets, false);
+   284→   284→
+   285→   285→    if (intersections.length > 0) {
+   286→   286→      const hit = intersections[0];
+   287→   287→      const isGround = hit.object.userData?.isGround === true;
+   288→   288→
+   289→   289→      let px: number, py: number, pz: number;
+   290→   290→
+   291→   291→      if (isGround) {
+   292→   292→        // Place on ground surface at y = 0.5
+   293→   293→        px = Math.round(hit.point.x);
+   294→   294→        py = 0.5;
+   295→   295→        pz = Math.round(hit.point.z);
+   296→   296→      } else {
+   297→   297→        // Place adjacent to the hit block based on face normal
+   298→   298→        const blockId: string | undefined = hit.object.userData?.blockId;
+   299→   299→        const blocks = builderBlocksRef.current;
+   300→   300→        const blockData = blocks.find((b) => b.id === blockId);
+   301→   301→
+   302→   302→        if (!blockData) {
+   303→   303→          if (ghostRef.current) ghostRef.current.visible = false;
+   304→   304→          return;
+   305→   305→        }
+   306→   306→
+   307→   307→        const normal = hit.face?.normal?.clone();
+   308→   308→        if (normal) {
+   309→   309→          normal.transformDirection(hit.object.matrixWorld);
+   310→   310→        }
+   311→   311→
+   312→   312→        const nx = normal?.x ?? 0;
+   313→   313→        const ny = normal?.y ?? 0;
+   314→   314→        const nz = normal?.z ?? 0;
+   315→   315→
+   316→   316→        if (Math.abs(ny) > 0.5) {
+   317→   317→          // Top or bottom face
+   318→   318→          px = blockData.position[0];
+   319→   319→          py = blockData.position[1] + Math.sign(ny);
+   320→   320→          pz = blockData.position[2];
+   321→   321→        } else if (Math.abs(nx) > 0.5) {
+   322→   322→          // Left or right face
+   323→   323→          px = blockData.position[0] + Math.sign(nx);
+   324→   324→          py = blockData.position[1];
+   325→   325→          pz = blockData.position[2];
+   326→   326→        } else {
+   327→   327→          // Front or back face
+   328→   328→          px = blockData.position[0];
+   329→   329→          py = blockData.position[1];
+   330→   330→          pz = blockData.position[2] + Math.sign(nz);
+   331→   331→        }
+   332→   332→      }
+   333→   333→
+   334→   334→      // Clamp to grid bounds
+   335→   335→      px = Math.max(-25, Math.min(25, px));
+   336→   336→      pz = Math.max(-25, Math.min(25, pz));
+   337→   337→      py = Math.max(0.5, py);
+   338→   338→
+   339→   339→      // Check if position is already occupied
+   340→   340→      const occupied = builderBlocksRef.current.some(
+   341→   341→        (b) => b.position[0] === px && b.position[1] === py && b.position[2] === pz
+   342→   342→      );
+   343→   343→
+   344→   344→      ghostPos.current.set(px, py, pz);
+   345→   345→      ghostValid.current = !occupied;
+   346→   346→
+   347→   347→      if (ghostRef.current) {
+   348→   348→        ghostRef.current.position.set(px, py, pz);
+   349→   349→        ghostRef.current.visible = true;
+   350→   350→      }
+   351→   351→      if (ghostMatRef.current) {
+   352→   352→        ghostMatRef.current.color.set(occupied ? '#ef4444' : '#22c55e');
+   353→   353→      }
+   354→   354→    } else {
+   355→   355→      if (ghostRef.current) ghostRef.current.visible = false;
+   356→   356→    }
+   357→   357→  });
+   358→   358→
+   359→   359→  // ================================================================
+   360→   360→  // Block Placement – Left Click on ground or placed blocks
+   361→   361→  // ================================================================
+   362→   362→  const handlePlace = useCallback(
+   363→   363→    (e: ThreeEvent<MouseEvent>) => {
+   364→   364→      e.stopPropagation();
+   365→   365→      if (!ghostValid.current || !ghostRef.current?.visible) return;
+   366→   366→
+   367→   367→      const newBlock: Block = {
+   368→   368→        id: crypto.randomUUID(),
+   369→   369→        position: [
+   370→   370→          ghostPos.current.x,
+   371→   371→          ghostPos.current.y,
+   372→   372→          ghostPos.current.z,
+   373→   373→        ],
+   374→   374→        size: [1, 1, 1],
+   375→   375→        color: selectedColorRef.current,
+   376→   376→        type: selectedTypeRef.current as Block['type'],
+   377→   377→        placed: true,
+   378→   378→      };
+   379→   379→
+   380→   380→      addBlock(newBlock);
+   381→   381→      addScore(10);
+   382→   382→    },
+   383→   383→    [addBlock, addScore]
+   384→   384→  );
+   385→   385→
+   386→   386→  // ================================================================
+   387→   387→  // Right-Click Removal – native DOM listener with drag detection
+   388→   388→  // ================================================================
+   389→   389→  useEffect(() => {
+   390→   390→    const canvas = gl.domElement;
+   391→   391→
+   392→   392→    const onPointerDown = (e: PointerEvent) => {
+   393→   393→      if (e.button === 0 || e.button === 2) {
+   394→   394→        pointerDownPos.current = { x: e.clientX, y: e.clientY };
+   395→   395→        isDragging.current = false;
+   396→   396→      }
+   397→   397→    };
+   398→   398→
+   399→   399→    const onPointerMove = (e: PointerEvent) => {
+   400→   400→      if (pointerDownPos.current) {
+   401→   401→        const dx = e.clientX - pointerDownPos.current.x;
+   402→   402→        const dy = e.clientY - pointerDownPos.current.y;
+   403→   403→        if (dx * dx + dy * dy > 25) {
+   404→   404→          isDragging.current = true;
+   405→   405→        }
+   406→   406→      }
+   407→   407→    };
+   408→   408→
+   409→   409→    const onContextMenu = (e: MouseEvent) => {
+   410→   410→      e.preventDefault();
+   411→   411→      if (isDragging.current || !pointerDownPos.current) {
+   412→   412→        pointerDownPos.current = null;
+   413→   413→        return;
+   414→   414→      }
+   415→   415→      pointerDownPos.current = null;
+   416→   416→
+   417→   417→      // Raycast from the right-click position to find a block
+   418→   418→      const rect = canvas.getBoundingClientRect();
+   419→   419→      const mouse = new THREE.Vector2(
+   420→   420→        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+   421→   421→        -((e.clientY - rect.top) / rect.height) * 2 + 1
+   422→   422→      );
+   423→   423→
+   424→   424→      raycaster.setFromCamera(mouse, camera);
+   425→   425→
+   426→   426→      const targets: THREE.Object3D[] = [];
+   427→   427→      if (blocksGroupRef.current) {
+   428→   428→        blocksGroupRef.current.traverse((child) => {
+   429→   429→          if ((child as THREE.Mesh).isMesh && (child as THREE.Mesh).userData?.blockId) {
+   430→   430→            targets.push(child);
+   431→   431→          }
+   432→   432→        });
+   433→   433→      }
+   434→   434→
+   435→   435→      const intersections = raycaster.intersectObjects(targets, false);
+   436→   436→      if (intersections.length > 0) {
+   437→   437→        const blockId: string | undefined = intersections[0].object.userData?.blockId;
+   438→   438→        if (blockId) {
+   439→   439→          removeBlockRef.current(blockId);
+   440→   440→        }
+   441→   441→      }
+   442→   442→    };
+   443→   443→
+   444→   444→    canvas.addEventListener('pointerdown', onPointerDown);
+   445→   445→    window.addEventListener('pointermove', onPointerMove);
+   446→   446→    canvas.addEventListener('contextmenu', onContextMenu);
+   447→   447→
+   448→   448→    return () => {
+   449→   449→      canvas.removeEventListener('pointerdown', onPointerDown);
+   450→   450→      window.removeEventListener('pointermove', onPointerMove);
+   451→   451→      canvas.removeEventListener('contextmenu', onContextMenu);
+   452→   452→    };
+   453→   453→  }, [gl, raycaster, camera]);
+   454→   454→
+   455→   455→  // ================================================================
+   456→   456→  // Achievement Tracking
+   457→   457→  // ================================================================
+   458→   458→  useEffect(() => {
+   459→   459→    const count = builderBlocks.length;
+   460→   460→    for (const m of ACHIEVEMENT_MILESTONES) {
+   461→   461→      if (count >= m && !prevMilestones.current.has(m)) {
+   462→   462→        prevMilestones.current.add(m);
+   463→   463→        showNotification(`🏆 Achievement: ${m} Blocks Placed!`, 3000);
+   464→   464→        break; // only one achievement per update
+   465→   465→      }
+   466→   466→    }
+   467→   467→  }, [builderBlocks.length, showNotification]);
+   468→   468→
+   469→   469→  // ================================================================
+   470→   470→  // Save / Load / Clear / Template
+   471→   471→  // ================================================================
+   472→   472→  const handleSave = useCallback(() => {
+   473→   473→    try {
+   474→   474→      localStorage.setItem('blockverse_builder', JSON.stringify(builderBlocks));
+   475→   475→      showNotification('💾 Build Saved!');
+   476→   476→    } catch {
+   477→   477→      showNotification('❌ Failed to save');
+   478→   478→    }
+   479→   479→  }, [builderBlocks, showNotification]);
+   480→   480→
+   481→   481→  const handleLoad = useCallback(() => {
+   482→   482→    try {
+   483→   483→      const raw = localStorage.getItem('blockverse_builder');
+   484→   484→      if (!raw) {
+   485→   485→        showNotification('❌ No saved build found');
+   486→   486→        return;
+   487→   487→      }
+   488→   488→      const data = JSON.parse(raw) as Block[];
+   489→   489→      clearBlocks();
+   490→   490→      prevMilestones.current.clear();
+   491→   491→      data.forEach((b) => addBlock(b));
+   492→   492→      showNotification(`📂 Build Loaded (${data.length} blocks)`);
+   493→   493→    } catch {
+   494→   494→      showNotification('❌ Failed to load build');
+   495→   495→    }
+   496→   496→  }, [addBlock, clearBlocks, showNotification]);
+   497→   497→
+   498→   498→  const handleClear = useCallback(() => {
+   499→   499→    clearBlocks();
+   500→   500→    prevMilestones.current.clear();
+   501→   501→    showNotification('🗑️ All Blocks Cleared');
+   502→   502→  }, [clearBlocks, showNotification]);
+   503→   503→
+   504→   504→  const handleTemplate = useCallback(() => {
+   505→   505→    const template = generateTemplateBlocks();
+   506→   506→    clearBlocks();
+   507→   507→    prevMilestones.current.clear();
+   508→   508→    template.forEach((b) => addBlock(b));
+   509→   509→    addScore(template.length * 10);
+   510→   510→    showNotification(`🏠 House Template Loaded (${template.length} blocks)`);
+   511→   511→  }, [addBlock, addScore, clearBlocks, showNotification]);
+   512→   512→
+   513→   513→  // Cleanup notification timer on unmount
+   514→   514→  useEffect(() => {
+   515→   515→    return () => {
+   516→   516→      if (notifTimer.current) clearTimeout(notifTimer.current);
+   517→   517→    };
+   518→   518→  }, []);
+   519→   519→
+   520→   520→  // ================================================================
+   521→   521→  // Render
+   522→   522→  // ================================================================
+   523→   523→  return (
+   524→   524→    <>
+   525→   525→      {/* ---- Sky & Lighting ---- */}
+   526→   526→      <Sky preset="day" />
+   527→   527→      <Lighting />
+   528→   528→
+   529→   529→      {/* ---- Physics Ground (provides collider) ---- */}
+   530→   530→      <Ground size={50} color="#4ade80" />
+   531→   531→
+   532→   532→      {/* ---- Visual flat green ground surface ---- */}
+   533→   533→      <mesh position={[0, 0.001, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+   534→   534→        <planeGeometry args={[50, 50]} />
+   535→   535→        <meshStandardMaterial color="#4ade80" roughness={0.85} />
+   536→   536→      </mesh>
+   537→   537→
+   538→   538→      {/* ---- Invisible raycasting ground (click target) ---- */}
+   539→   539→      <mesh
+   540→   540→        ref={groundClickRef}
+   541→   541→        position={[0, 0, 0]}
+   542→   542→        rotation={[-Math.PI / 2, 0, 0]}
+   543→   543→        visible={false}
+   544→   544→        userData={{ isGround: true }}
+   545→   545→        onClick={handlePlace}
+   546→   546→      >
+   547→   547→        <planeGeometry args={[50, 50]} />
+   548→   548→        <meshBasicMaterial side={THREE.DoubleSide} />
+   549→   549→      </mesh>
+   550→   550→
+   551→   551→      {/* ---- Grid Overlay (drei) ---- */}
+   552→   552→      <Grid
+   553→   553→        infiniteGrid
+   554→   554→        cellSize={1}
+   555→   555→        sectionSize={5}
+   556→   556→        color="#6b7280"
+   557→   557→        sectionColor="#9ca3af"
+   558→   558→        fadeDistance={30}
+   559→   559→        cellThickness={0.5}
+   560→   560→        sectionThickness={1}
+   561→   561→        fadeStrength={1.5}
+   562→   562→        position={[0, 0.01, 0]}
+   563→   563→      />
+   564→   564→
+   565→   565→      {/* ---- Ghost Block (semi-transparent preview) ---- */}
+   566→   566→      <mesh ref={ghostRef} position={[0, -100, 0]} visible={false}>
+   567→   567→        <boxGeometry args={[1, 1, 1]} />
+   568→   568→        <meshStandardMaterial
+   569→   569→          ref={ghostMatRef}
+   570→   570→          color="#22c55e"
+   571→   571→          transparent
+   572→   572→          opacity={0.5}
+   573→   573→          depthWrite={false}
+   574→   574→        />
+   575→   575→        <Edges threshold={15} color="#000000" />
+   576→   576→      </mesh>
+   577→   577→
+   578→   578→      {/* ---- Placed Blocks ---- */}
+   579→   579→      <group ref={blocksGroupRef}>
+   580→   580→        {builderBlocks.map((block) => (
+   581→   581→          <PlacedBlock key={block.id} block={block} onClick={handlePlace} />
+   582→   582→        ))}
+   583→   583→      </group>
+   584→   584→
+   585→   585→      {/* ---- Camera Controls ---- */}
+   586→   586→      <OrbitControls
+   587→   587→        makeDefault
+   588→   588→        minDistance={3}
+   589→   589→        maxDistance={50}
+   590→   590→        maxPolarAngle={Math.PI / 2.1}
+   591→   591→        mouseButtons={{
+   592→   592→          LEFT: (-1) as THREE.MOUSE,
+   593→   593→          MIDDLE: THREE.MOUSE.PAN,
+   594→   594→          RIGHT: THREE.MOUSE.ROTATE,
+   595→   595→        }}
+   596→   596→        target={[0, 0, 0]}
+   597→   597→      />
+   598→   598→
+   599→   599→      {/* ---- HTML Overlay (HUD, Toolbar, Notifications) ---- */}
+   600→   600→      <Html fullscreen style={{ pointerEvents: 'none' }}>
+   601→   601→        <div className="absolute inset-0 overflow-hidden" style={{ pointerEvents: 'none' }}>
+   602→   602→
+   603→   603→          {/* === Controls Help – Top Left === */}
+   604→   604→          <div
+   605→   605→            className="absolute top-3 left-3 bg-black/70 backdrop-blur-sm text-white text-[10px] sm:text-xs rounded-lg px-2.5 py-2 max-w-[280px] sm:max-w-sm leading-relaxed"
+   606→   606→            style={{ pointerEvents: 'none' }}
+   607→   607→          >
+   608→   608→            <span className="font-bold text-amber-400">Controls:</span>{' '}
+   609→   609→            <span className="opacity-90">
+   610→   610→              Left Click → Place &nbsp;|&nbsp; Right Click → Remove &nbsp;|&nbsp;
+   611→   611→              Scroll → Zoom &nbsp;|&nbsp; Right Drag → Rotate &nbsp;|&nbsp;
+   612→   612→              Middle Drag → Pan
+   613→   613→            </span>
+   614→   614→          </div>
+   615→   615→
+   616→   616→          {/* === Block Count & Score – Top Right === */}
+   617→   617→          <div
+   618→   618→            className="absolute top-3 right-3 bg-black/70 backdrop-blur-sm text-white text-xs sm:text-sm rounded-lg px-3 py-2 flex items-center gap-2.5"
+   619→   619→            style={{ pointerEvents: 'none' }}
+   620→   620→          >
+   621→   621→            <span title="Blocks placed">
+   622→   622→              🧱 <strong>{builderBlocks.length}</strong>
+   623→   623→            </span>
+   624→   624→            <span className="w-px h-4 bg-white/20" />
+   625→   625→            <span title="Score">
+   626→   626→              ⭐ <strong>{Math.floor(score)}</strong>
+   627→   627→            </span>
+   628→   628→          </div>
+   629→   629→
+   630→   630→          {/* === Achievement / Action Notification === */}
+   631→   631→          {notification && (
+   632→   632→            <div
+   633→   633→              className="absolute top-16 left-1/2 -translate-x-1/2 bg-amber-500/95 text-black font-bold rounded-xl px-5 py-2.5 text-sm sm:text-base shadow-lg shadow-amber-600/30 whitespace-nowrap"
+   634→   634→              style={{
+   635→   635→                pointerEvents: 'none',
+   636→   636→                animation: 'bounce 0.6s ease-out',
+   637→   637→              }}
+   638→   638→            >
+   639→   639→              {notification}
+   640→   640→            </div>
+   641→   641→          )}
+   642→   642→
+   643→   643→          {/* === Toolbar – Bottom Center === */}
+   644→   644→          <div
+   645→   645→            className="absolute bottom-3 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 w-[calc(100%-1rem)] max-w-2xl"
+   646→   646→            style={{ pointerEvents: 'none' }}
+   647→   647→          >
+   648→   648→            {/* Color Swatches Row */}
+   649→   649→            <div
+   650→   650→              className="flex gap-1 sm:gap-1.5 bg-black/70 backdrop-blur-sm rounded-xl p-1.5 sm:p-2 flex-wrap justify-center"
+   651→   651→              style={{ pointerEvents: 'auto' }}
+   652→   652→            >
+   653→   653→              {SOLID_COLORS.map((c) => {
+   654→   654→                const isActive = selectedColor === c.value;
+   655→   655→                return (
+   656→   656→                  <button
+   657→   657→                    key={c.value}
+   658→   658→                    title={c.name}
+   659→   659→                    onClick={() => setSelectedColor(c.value)}
+   660→   660→                    className="w-6 h-6 sm:w-7 sm:h-7 rounded-md border-2 transition-all duration-150 hover:scale-110 active:scale-90 cursor-pointer"
+   661→   661→                    style={{
+   662→   662→                      backgroundColor: c.value,
+   663→   663→                      borderColor: isActive ? '#ffffff' : 'rgba(255,255,255,0.15)',
+   664→   664→                      boxShadow: isActive ? `0 0 8px 2px ${c.value}80` : 'none',
+   665→   665→                    }}
+   666→   666→                  />
+   667→   667→                );
+   668→   668→              })}
+   669→   669→            </div>
+   670→   670→
+   671→   671→            {/* Type Buttons + Action Buttons Row */}
+   672→   672→            <div
+   673→   673→              className="flex items-center gap-1 sm:gap-1.5 bg-black/70 backdrop-blur-sm rounded-xl p-1.5 sm:p-2 flex-wrap justify-center"
+   674→   674→              style={{ pointerEvents: 'auto' }}
+   675→   675→            >
+   676→   676→              {/* Block Type Buttons */}
+   677→   677→              {BLOCK_TYPES.map((t) => {
+   678→   678→                const isActive = selectedType === t.value;
+   679→   679→                return (
+   680→   680→                  <button
+   681→   681→                    key={t.value}
+   682→   682→                    title={`Block type: ${t.name}`}
+   683→   683→                    onClick={() => setSelectedType(t.value)}
+   684→   684→                    className="px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-md text-[10px] sm:text-xs font-semibold transition-all duration-150 cursor-pointer"
+   685→   685→                    style={{
+   686→   686→                      backgroundColor: isActive ? 'rgba(255,255,255,0.18)' : 'transparent',
+   687→   687→                      color: isActive ? '#ffffff' : 'rgba(255,255,255,0.55)',
+   688→   688→                      border: `1px solid ${isActive ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.08)'}`,
+   689→   689→                    }}
+   690→   690→                  >
+   691→   691→                    {t.name}
+   692→   692→                  </button>
+   693→   693→                );
+   694→   694→              })}
+   695→   695→
+   696→   696→              {/* Separator */}
+   697→   697→              <div className="w-px h-5 bg-white/20 mx-0.5 sm:mx-1" />
+   698→   698→
+   699→   699→              {/* Save */}
+   700→   700→              <button
+   701→   701→                onClick={handleSave}
+   702→   702→                className="px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-md text-[10px] sm:text-xs font-semibold bg-emerald-600/80 hover:bg-emerald-500 text-white transition-all duration-150 cursor-pointer"
+   703→   703→              >
+   704→   704→                💾 Save
+   705→   705→              </button>
+   706→   706→
+   707→   707→              {/* Load */}
+   708→   708→              <button
+   709→   709→                onClick={handleLoad}
+   710→   710→                className="px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-md text-[10px] sm:text-xs font-semibold bg-sky-600/80 hover:bg-sky-500 text-white transition-all duration-150 cursor-pointer"
+   711→   711→              >
+   712→   712→                📂 Load
+   713→   713→              </button>
+   714→   714→
+   715→   715→              {/* Clear */}
+   716→   716→              <button
+   717→   717→                onClick={handleClear}
+   718→   718→                className="px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-md text-[10px] sm:text-xs font-semibold bg-red-600/80 hover:bg-red-500 text-white transition-all duration-150 cursor-pointer"
+   719→   719→              >
+   720→   720→                🗑️ Clear
+   721→   721→              </button>
+   722→   722→
+   723→   723→              {/* Template */}
+   724→   724→              <button
+   725→   725→                onClick={handleTemplate}
+   726→   726→                className="px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-md text-[10px] sm:text-xs font-semibold bg-amber-600/80 hover:bg-amber-500 text-white transition-all duration-150 cursor-pointer"
+   727→   727→              >
+   728→   728→                🏠 Template
+   729→   729→              </button>
+   730→   730→            </div>
+   731→   731→          </div>
+   732→   732→
+   733→   733→        </div>
+   734→   734→      </Html>
+   735→   735→    </>
+   736→   736→  );
+   737→   737→}

@@ -169,8 +169,9 @@ function GameCanvas() {
       <SceneTransition />
       <MobileControls />
 
-      {/* Scene-specific overlays for builder (toolbar handled inside BuilderScene) */}
+      {/* Scene-specific overlays */}
       {currentScene === 'lobby' && <LobbyInfoBar />}
+      {/* Hide desktop HUD elements on mobile (mobile has MobilePauseButton) */}
     </div>
   );
 }
@@ -178,7 +179,7 @@ function GameCanvas() {
 function LobbyInfoBar() {
   const player = useGameStore((s) => s.player);
   return (
-    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-6 px-6 py-2.5 rounded-full bg-black/40 backdrop-blur-md border border-white/10">
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-6 px-6 py-2.5 rounded-full bg-black/40 backdrop-blur-md border border-white/10 hidden sm:flex">
       <div className="flex items-center gap-2">
         <span className="text-yellow-400 font-bold text-lg">⭐</span>
         <span className="text-white font-bold">{player.totalScore}</span>

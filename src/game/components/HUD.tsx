@@ -47,7 +47,7 @@ export default function HUD() {
   if (!game.showHUD) return null;
 
   return (
-    <div className="fixed inset-0 z-50 pointer-events-none">
+    <div className="fixed inset-0 z-20 pointer-events-none sm:z-50">
       {/* Top Bar */}
       <div className="flex items-center justify-between px-4 py-3 sm:px-6">
         {/* Score */}
@@ -88,9 +88,25 @@ export default function HUD() {
         </motion.div>
       </div>
 
-      {/* Bottom Bar */}
+      {/* Mobile-only: compact HP bar at top center (under scene name) */}
+      <div className="sm:hidden absolute top-14 left-1/2 -translate-x-1/2 pointer-events-none">
+        <div className="flex items-center gap-2 bg-black/50 backdrop-blur-sm rounded-full px-3 py-1.5">
+          <Heart className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+          <div className="w-20 h-2 bg-gray-800 rounded-full overflow-hidden">
+            <motion.div
+              className={`h-full rounded-full ${healthColor}`}
+              animate={{ width: `${healthPercent}%` }}
+              transition={{ duration: 0.3 }}
+            />
+          </div>
+          <Coins className="w-3.5 h-3.5 text-yellow-400 flex-shrink-0" />
+          <span className="text-white font-bold text-xs tabular-nums">{game.coins}</span>
+        </div>
+      </div>
+
+      {/* Bottom Bar — hidden on mobile (mobile controls need the space) */}
       <motion.div
-        className="absolute bottom-0 left-0 right-0 px-4 pb-4 sm:px-6 sm:pb-6"
+        className="hidden sm:block absolute bottom-0 left-0 right-0 px-4 pb-4 sm:px-6 sm:pb-6"
         initial={{ y: 50, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: 0.4, delay: 0.2 }}
@@ -148,10 +164,10 @@ export default function HUD() {
         </div>
       </motion.div>
 
-      {/* Pause Button */}
+      {/* Pause Button — desktop only (mobile has its own) */}
       <button
         onClick={handlePause}
-        className="absolute top-3 right-3 sm:top-4 sm:right-20 pointer-events-auto rounded-lg bg-black/50 backdrop-blur-sm p-2 hover:bg-black/70 transition-colors"
+        className="hidden sm:flex absolute top-3 right-3 sm:top-4 sm:right-20 pointer-events-auto rounded-lg bg-black/50 backdrop-blur-sm p-2 hover:bg-black/70 transition-colors items-center"
       >
         <Pause className="w-5 h-5 text-white" />
       </button>

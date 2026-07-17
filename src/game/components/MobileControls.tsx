@@ -1,11 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from 'react';
+import { useRef, useState, useCallback, useEffect, useSyncExternalStore } from 'react';
 import {
   setMovement,
   setJump,
   setAttack,
-  setInteract,
   addCameraDelta,
   setTouchActive,
   isMobileDevice,
@@ -53,9 +52,7 @@ function VirtualJoystick() {
         knobRef.current.style.transform = `translate(${knobX}px, ${knobY}px)`;
       }
 
-      // Normalized movement (-1 to 1)
       const normalizedDist = clampedDist / maxDist;
-      // Joystick: up = -z, down = +z, left = -x, right = +x
       setMovement(
         Math.cos(angle) * normalizedDist,
         Math.sin(angle) * normalizedDist
@@ -81,21 +78,20 @@ function VirtualJoystick() {
   return (
     <div
       ref={baseRef}
-      className="absolute bottom-28 left-6 w-28 h-28 rounded-full bg-white/10 backdrop-blur-sm border-2 border-white/20 flex items-center justify-center touch-none select-none z-50"
+      className="w-32 h-32 rounded-full bg-white/10 backdrop-blur-sm border-2 border-white/20 flex items-center justify-center touch-none select-none"
+      style={{ pointerEvents: 'auto' }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
       onTouchCancel={handleTouchEnd}
     >
-      {/* Direction labels */}
-      <span className="absolute top-1 text-white/30 text-xs font-bold">W</span>
-      <span className="absolute bottom-1 text-white/30 text-xs font-bold">S</span>
-      <span className="absolute left-2 text-white/30 text-xs font-bold">A</span>
-      <span className="absolute right-2 text-white/30 text-xs font-bold">D</span>
-      {/* Knob */}
+      <span className="absolute top-1.5 text-white/30 text-xs font-bold">W</span>
+      <span className="absolute bottom-1.5 text-white/30 text-xs font-bold">S</span>
+      <span className="absolute left-2.5 text-white/30 text-xs font-bold">A</span>
+      <span className="absolute right-2.5 text-white/30 text-xs font-bold">D</span>
       <div
         ref={knobRef}
-        className="w-12 h-12 rounded-full bg-white/30 border-2 border-white/50 shadow-lg transition-none"
+        className="w-14 h-14 rounded-full bg-white/30 border-2 border-white/50 shadow-lg transition-none"
         style={{ transform: 'translate(0px, 0px)' }}
       />
     </div>
@@ -145,8 +141,9 @@ function ActionButton({
 
   return (
     <button
-      className={`flex flex-col items-center justify-center rounded-full touch-none select-none active:scale-90 transition-transform`}
+      className="flex flex-col items-center justify-center rounded-full touch-none select-none active:scale-90 transition-transform"
       style={{
+        pointerEvents: 'auto',
         width: size * 4,
         height: size * 4,
         backgroundColor: color,
@@ -163,7 +160,9 @@ function ActionButton({
   );
 }
 
-// ─── Camera Touch Area (right side of screen) ───
+// ─── Camera Touch Area ───
+// Full screen but at LOW z-index, only catches touches that pass through
+// joystick/buttons (which have higher z-index + pointer-events: auto)
 function CameraTouchArea() {
   const lastTouch = useRef<{ x: number; y: number; id: number } | null>(null);
 
@@ -197,13 +196,65 @@ function CameraTouchArea() {
 
   return (
     <div
-      className="absolute inset-0 z-30 touch-none"
-      style={{ pointerEvents: 'auto' }}
+      className="fixed inset-0 touch-none"
+      style={{ pointerEvents: 'auto', zIndex: 15 }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
       onTouchCancel={handleTouchEnd}
     />
+  );
+}
+
+// ─── Fullscreen Button ───
+function FullscreenButton() {
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const toggleFullscreen = useCallback(async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+        setIsFullscreen(true);
+      } else {
+        await document.exitFullscreen();
+        setIsFullscreen(false);
+      }
+    } catch {
+      // iOS Safari fallback: try webkit
+      const el = document.documentElement as any;
+      if (!el.webkitFullscreenElement) {
+        el.webkitRequestFullscreen?.();
+        setIsFullscreen(true);
+      } else {
+        el.webkitExitFullscreen?.();
+        setIsFullscreen(false);
+      }
+    }
+  }, []);
+
+  // Sync with actual fullscreen state
+  const handleChange = useCallback(() => {
+    setIsFullscreen(!!document.fullscreenElement);
+  }, []);
+
+  useEffect(() => {
+    document.addEventListener('fullscreenchange', handleChange);
+    document.addEventListener('webkitfullscreenchange', handleChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleChange);
+      document.removeEventListener('webkitfullscreenchange', handleChange);
+    };
+  }, [handleChange]);
+
+  return (
+    <button
+      className="w-11 h-11 rounded-full bg-black/50 backdrop-blur-sm border border-white/20 flex items-center justify-center active:scale-90 transition-transform"
+      style={{ pointerEvents: 'auto' }}
+      onClick={toggleFullscreen}
+      onTouchEnd={(e) => { e.preventDefault(); e.stopPropagation(); toggleFullscreen(); }}
+    >
+      <span className="text-white text-lg">{isFullscreen ? '⛶' : '⛶'}</span>
+    </button>
   );
 }
 
@@ -222,54 +273,43 @@ export default function MobileControls() {
 
   return (
     <>
-      {/* Camera touch area — covers full screen, below joystick/buttons */}
+      {/* Camera touch area — z-15, below all controls */}
       <CameraTouchArea />
 
-      {/* Joystick — bottom left */}
-      <div className="fixed bottom-0 left-0 z-40 pointer-events-none">
+      {/* Top-left: Pause + Fullscreen */}
+      <div className="fixed top-3 left-3 flex flex-col gap-2" style={{ zIndex: 60, pointerEvents: 'auto' }}>
+        <MobilePauseButton />
+        <FullscreenButton />
+      </div>
+
+      {/* Joystick — bottom left, z-30 */}
+      <div className="fixed bottom-4 left-4" style={{ zIndex: 30, pointerEvents: 'none' }}>
         <VirtualJoystick />
       </div>
 
-      {/* Action buttons — bottom right */}
-      <div className="fixed bottom-6 right-6 z-40 pointer-events-none flex flex-col items-center gap-3">
-        {/* Jump button — large, prominent */}
+      {/* Action buttons — bottom right, z-30 */}
+      <div className="fixed bottom-6 right-4 flex flex-col items-center gap-3" style={{ zIndex: 30, pointerEvents: 'none' }}>
+        {/* Jump button */}
         <ActionButton
           label="Nhảy"
-          icon="⬆️"
-          color="rgba(34, 197, 94, 0.5)"
+          icon="⬆"
+          color="rgba(34, 197, 94, 0.6)"
           size={18}
           onPress={() => setJump(true)}
           onRelease={() => setJump(false)}
         />
 
-        {/* Secondary row: Attack + Interact */}
-        <div className="flex gap-3">
-          {!isLobby && (
-            <ActionButton
-              label="Đánh"
-              icon="⚔️"
-              color="rgba(239, 68, 68, 0.5)"
-              size={14}
-              onPress={() => setAttack(true)}
-              onRelease={() => setAttack(false)}
-            />
-          )}
-          {!isLobby && (
-            <ActionButton
-              label="Tương tác"
-              icon="👆"
-              color="rgba(251, 191, 36, 0.5)"
-              size={14}
-              onPress={() => setInteract(true)}
-              onRelease={() => setInteract(false)}
-            />
-          )}
-        </div>
-      </div>
-
-      {/* Pause button — top right */}
-      <div className="fixed top-4 right-4 z-40 pointer-events-auto">
-        <MobilePauseButton />
+        {/* Secondary row: Attack */}
+        {!isLobby && (
+          <ActionButton
+            label="Đánh"
+            icon="⚔"
+            color="rgba(239, 68, 68, 0.6)"
+            size={15}
+            onPress={() => setAttack(true)}
+            onRelease={() => setAttack(false)}
+          />
+        )}
       </div>
     </>
   );
@@ -302,26 +342,26 @@ function MobilePauseButton() {
   return (
     <>
       <button
-        className="w-12 h-12 rounded-full bg-black/50 backdrop-blur-sm border border-white/20 flex items-center justify-center active:scale-90 transition-transform"
+        className="w-11 h-11 rounded-full bg-black/50 backdrop-blur-sm border border-white/20 flex items-center justify-center active:scale-90 transition-transform"
         onClick={handleToggle}
       >
-        <span className="text-white text-xl">{isPaused ? '▶️' : '⏸️'}</span>
+        <span className="text-white text-lg">{isPaused ? '▶' : '⏸'}</span>
       </button>
 
       {showMenu && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center" style={{ zIndex: 100 }}>
           <div className="bg-slate-900/95 border border-white/10 rounded-2xl p-6 mx-6 max-w-xs w-full">
-            <h2 className="text-white text-xl font-bold text-center mb-6">⏸️ Tạm dừng</h2>
+            <h2 className="text-white text-xl font-bold text-center mb-6">Tạm dừng</h2>
             <div className="flex flex-col gap-3">
               <button
                 onClick={() => { resumeGame(); setShowMenu(false); }}
-                className="w-full py-3 rounded-xl bg-green-600/80 text-white font-bold text-base active:scale-95 transition-transform"
+                className="w-full py-3.5 rounded-xl bg-green-600/80 text-white font-bold text-base active:scale-95 transition-transform"
               >
-                ▶️ Tiếp tục
+                ▶ Tiếp tục
               </button>
               <button
                 onClick={handleBackToLobby}
-                className="w-full py-3 rounded-xl bg-slate-700/80 text-white font-bold text-base active:scale-95 transition-transform"
+                className="w-full py-3.5 rounded-xl bg-slate-700/80 text-white font-bold text-base active:scale-95 transition-transform"
               >
                 🏠 Về Lobby
               </button>

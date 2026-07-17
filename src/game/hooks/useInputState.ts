@@ -129,10 +129,9 @@ let touchActive = false;
 export function setTouchActive(v: boolean) {
   touchActive = v;
   if (!v) {
-    // Touch released — let keyboard take over again
-    inputState.moveX = keyboardMoveX;
-    inputState.moveZ = keyboardMoveZ;
-    updateKeyboardMovement();
+    // Touch released — reset movement to zero, keyboard will override on next keypress
+    inputState.moveX = 0;
+    inputState.moveZ = 0;
   }
 }
 

@@ -5,7 +5,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { RigidBody, CuboidCollider } from '@react-three/rapier';
 import type { Mesh, Group } from 'three';
 import { useGameStore } from '@/game/store';
-import { getInputState, initKeyboardInput, setTouchActive, isMobileDevice } from '@/game/hooks/useInputState';
+import { getInputState, initKeyboardInput, isMobileDevice } from '@/game/hooks/useInputState';
 
 interface PlayerProps {
   position?: [number, number, number];
@@ -29,19 +29,31 @@ export default function Player({
   const lastJump = useRef(false);
   const keysPressed = useRef<Set<string>>(new Set());
 
+  // Coyote time: allows jumping briefly after leaving a ledge
+  const lastGroundedTime = useRef(0);
+  const COYOTE_TIME = 0.15; // 150ms grace period
+
+  // Jump buffer: if you press jump slightly before landing, it still works
+  const lastJumpPressTime = useRef(0);
+  const JUMP_BUFFER = 0.12; // 120ms buffer
+
   const loseLife = useGameStore((s) => s.loseLife);
   const game = useGameStore((s) => s.game);
   const spawnPos = useRef<[number, number, number]>([...position]);
 
-  const JUMP_FORCE = 8;
-  const MOVE_SPEED = 6;
-  const MAX_SPEED = 8;
+  // Mobile gets slightly easier physics
+  const mobileMode = useRef(false);
 
-  // Initialize keyboard input system
+  const JUMP_FORCE = 9;     // Higher jump
+  const MOVE_SPEED = 7;     // Slightly faster
+  const MAX_SPEED = 9;
+  const ACCELERATION = 12;  // Smooth acceleration (was instant before)
+  const DECELERATION = 10;  // Smooth deceleration
+
   useEffect(() => {
+    mobileMode.current = isMobileDevice();
     const cleanup = initKeyboardInput();
 
-    // Legacy keyboard handlers for 'r' respawn (not in shared state)
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() === 'r' && game.isGameOver && apiRef.current) {
         apiRef.current.setTranslation(
@@ -64,9 +76,11 @@ export default function Player({
 
     const rbPos = apiRef.current.translation();
     const rbVel = apiRef.current.linvel();
+    const time = state.clock.getElapsedTime();
 
-    // Fall detection
-    if (rbPos.y < -20) {
+    // Fall detection — more forgiving on mobile
+    const fallThreshold = mobileMode.current ? -30 : -20;
+    if (rbPos.y < fallThreshold) {
       loseLife();
       apiRef.current.setTranslation(
         { x: spawnPos.current[0], y: spawnPos.current[1] + 2, z: spawnPos.current[2] },
@@ -76,10 +90,26 @@ export default function Player({
       return;
     }
 
-    // Check if on floor
-    isOnFloor.current = Math.abs(rbVel.y) < 0.5 && rbPos.y < spawnPos.current[1] + 1.5;
+    // ─── Improved floor detection ───
+    // Using both collision callback AND velocity check
+    const wasOnFloor = isOnFloor.current;
+    // Floor check: low vertical velocity AND not too high above spawn
+    const velCheck = Math.abs(rbVel.y) < 1.0;
+    const heightCheck = rbPos.y < spawnPos.current[1] + 2.0;
+    const newFloorState = velCheck && heightCheck;
 
-    // ─── Read from shared input state ───
+    if (newFloorState && !wasOnFloor) {
+      // Just landed
+      lastGroundedTime.current = time;
+    }
+    isOnFloor.current = newFloorState;
+
+    // Update coyote timer — keep refreshing while on ground
+    if (isOnFloor.current) {
+      lastGroundedTime.current = time;
+    }
+
+    // ─── Read input ───
     const input = getInputState();
     let moveX = input.moveX;
     let moveZ = input.moveZ;
@@ -91,7 +121,7 @@ export default function Player({
       moveZ /= len;
     }
 
-    // Get camera direction for movement relative to camera
+    // ─── Camera-relative movement ───
     const camera = state.camera;
     const cameraAngle = Math.atan2(camera.position.x - rbPos.x, camera.position.z - rbPos.z);
     const cos = Math.cos(cameraAngle);
@@ -99,12 +129,43 @@ export default function Player({
     const worldMoveX = moveX * cos + moveZ * sin;
     const worldMoveZ = -moveX * sin + moveZ * cos;
 
+    // ─── Smooth acceleration / deceleration ───
     const targetVelX = worldMoveX * MOVE_SPEED;
     const targetVelZ = worldMoveZ * MOVE_SPEED;
 
-    const clampedX = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, targetVelX));
-    const clampedZ = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, targetVelZ));
+    const accel = isMoving ? ACCELERATION : DECELERATION;
+    const lerpT = Math.min(1, accel * delta);
 
+    const currentVelX = rbVel.x;
+    const currentVelZ = rbVel.z;
+    const newVelX = currentVelX + (targetVelX - currentVelX) * lerpT;
+    const newVelZ = currentVelZ + (targetVelZ - currentVelZ) * lerpT;
+
+    const clampedX = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, newVelX));
+    const clampedZ = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, newVelZ));
+
+    // ─── JUMP with coyote time + buffer ───
+    const currentJump = input.jump;
+    const timeSinceGrounded = time - lastGroundedTime.current;
+    const canCoyoteJump = timeSinceGrounded < COYOTE_TIME;
+
+    // Track when jump was pressed
+    if (currentJump && !lastJump.current) {
+      lastJumpPressTime.current = time;
+    }
+
+    // Check if we should jump (either now or buffered)
+    const timeSinceJumpPress = time - lastJumpPressTime.current;
+    const jumpBuffered = timeSinceJumpPress < JUMP_BUFFER;
+
+    if (jumpBuffered && !lastJump.current && (isOnFloor.current || canCoyoteJump)) {
+      apiRef.current.setLinvel({ x: clampedX, y: JUMP_FORCE, z: clampedZ }, true);
+      lastJumpPressTime.current = 0; // Consume the buffer
+      vibrateJump();
+    }
+    lastJump.current = currentJump;
+
+    // Apply movement
     apiRef.current.setLinvel(
       {
         x: clampedX,
@@ -114,44 +175,25 @@ export default function Player({
       true
     );
 
-    // Jump (edge-triggered: only on rising edge)
-    const currentJump = input.jump;
-    if (currentJump && !lastJump.current && isOnFloor.current) {
-      apiRef.current.setLinvel({ x: rbVel.x, y: JUMP_FORCE, z: rbVel.z }, true);
-    }
-    lastJump.current = currentJump;
-
-    // Rotate player to face movement direction
+    // ─── Rotate player to face movement direction ───
     if (isMoving) {
       const angle = Math.atan2(worldMoveX, worldMoveZ);
       const currentRotY = groupRef.current.rotation.y;
       let diff = angle - currentRotY;
       while (diff > Math.PI) diff -= 2 * Math.PI;
       while (diff < -Math.PI) diff += 2 * Math.PI;
-      groupRef.current.rotation.y += diff * Math.min(1, delta * 10);
+      groupRef.current.rotation.y += diff * Math.min(1, delta * 12);
     }
 
-    // Walking animation
-    const time = state.clock.getElapsedTime();
+    // ─── Walking animation ───
     if (isMoving) {
       const swingSpeed = 8;
       const swingAmount = 0.6;
-      if (leftArmRef.current) {
-        leftArmRef.current.rotation.x = Math.sin(time * swingSpeed) * swingAmount;
-      }
-      if (rightArmRef.current) {
-        rightArmRef.current.rotation.x = -Math.sin(time * swingSpeed) * swingAmount;
-      }
-      if (leftLegRef.current) {
-        leftLegRef.current.rotation.x = -Math.sin(time * swingSpeed) * swingAmount;
-      }
-      if (rightLegRef.current) {
-        rightLegRef.current.rotation.x = Math.sin(time * swingSpeed) * swingAmount;
-      }
-      // Bobbing
-      if (bodyRef.current) {
-        bodyRef.current.position.y = Math.abs(Math.sin(time * swingSpeed * 2)) * 0.05;
-      }
+      if (leftArmRef.current) leftArmRef.current.rotation.x = Math.sin(time * swingSpeed) * swingAmount;
+      if (rightArmRef.current) rightArmRef.current.rotation.x = -Math.sin(time * swingSpeed) * swingAmount;
+      if (leftLegRef.current) leftLegRef.current.rotation.x = -Math.sin(time * swingSpeed) * swingAmount;
+      if (rightLegRef.current) rightLegRef.current.rotation.x = Math.sin(time * swingSpeed) * swingAmount;
+      if (bodyRef.current) bodyRef.current.position.y = Math.abs(Math.sin(time * swingSpeed * 2)) * 0.05;
     } else {
       if (leftArmRef.current) leftArmRef.current.rotation.x = 0;
       if (rightArmRef.current) rightArmRef.current.rotation.x = 0;
@@ -172,7 +214,7 @@ export default function Player({
       type="dynamic"
       position={position}
       enabledRotations={[false, false, false]}
-      linearDamping={4}
+      linearDamping={3}    // Slightly less damping = more slidey/forgiving
       mass={1}
       lockRotations
       colliders={false}
@@ -200,7 +242,6 @@ export default function Player({
             <boxGeometry args={[0.5, 0.5, 0.5]} />
             <meshStandardMaterial color={skinColor} />
           </mesh>
-          {/* Eyes */}
           <mesh position={[-0.1, 0.05, 0.26]}>
             <boxGeometry args={[0.08, 0.08, 0.02]} />
             <meshBasicMaterial color="#1a1a1a" />
@@ -209,7 +250,6 @@ export default function Player({
             <boxGeometry args={[0.08, 0.08, 0.02]} />
             <meshBasicMaterial color="#1a1a1a" />
           </mesh>
-          {/* Mouth */}
           <mesh position={[0, -0.1, 0.26]}>
             <boxGeometry args={[0.15, 0.03, 0.02]} />
             <meshBasicMaterial color="#1a1a1a" />
@@ -258,4 +298,8 @@ export default function Player({
       </group>
     </RigidBody>
   );
+}
+
+function vibrateJump() {
+  try { navigator.vibrate?.(20); } catch {}
 }

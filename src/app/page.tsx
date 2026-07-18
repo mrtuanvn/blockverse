@@ -156,7 +156,7 @@ function GameCanvas() {
         }}
         onCreated={handleCreated}
       >
-        <Physics gravity={[0, -20, 0]} debug={false}>
+        <Physics gravity={[0, -16, 0]} debug={false}>
           <Suspense fallback={null}>
             <SceneComponent />
           </Suspense>

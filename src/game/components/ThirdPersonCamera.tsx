@@ -36,6 +36,13 @@ export default function ThirdPersonCamera({
     isMobile.current = isMobileDevice();
   }, []);
 
+  // Mobile: start with a slightly higher angle so you can see more
+  useEffect(() => {
+    if (isMobile.current) {
+      rotationX.current = 0.3; // Slightly looking down
+    }
+  }, []);
+
   const handleClick = useCallback(() => {
     if (!isLocked.current && !isMobile.current) {
       gl.domElement.requestPointerLock();
@@ -66,7 +73,6 @@ export default function ThirdPersonCamera({
   useEffect(() => {
     const canvas = gl.domElement;
 
-    // Only add pointer lock listeners on desktop
     if (!isMobile.current) {
       canvas.addEventListener('click', handleClick);
       document.addEventListener('pointerlockchange', handlePointerLockChange);
@@ -92,7 +98,7 @@ export default function ThirdPersonCamera({
       targetPosition.current.y += 2;
     }
 
-    // ─── Consume touch camera delta (from MobileControls joystick area) ───
+    // ─── Consume touch camera delta ───
     const touchDelta = consumeCameraDelta();
     if (touchDelta.dx !== 0 || touchDelta.dy !== 0) {
       rotationY.current -= touchDelta.dx;
@@ -104,9 +110,10 @@ export default function ThirdPersonCamera({
       cameraOffsetState.rotationX = rotationX.current;
     }
 
-    // Calculate camera position based on spherical coordinates
-    const distance = offset[2];
-    const height = offset[1];
+    // ─── Camera distance: closer on mobile for better visibility ───
+    const mobile = isMobile.current;
+    const distance = mobile ? offset[2] * 0.75 : offset[2]; // 25% closer on mobile
+    const height = mobile ? offset[1] * 0.85 : offset[1];   // Slightly lower on mobile
 
     const sphericalY = rotationY.current;
     const sphericalX = rotationX.current;
@@ -117,20 +124,23 @@ export default function ThirdPersonCamera({
 
     const targetCamPos = new THREE.Vector3(camX, camY, camZ);
 
-    // Smooth lerp
-    const lerpFactor = 1 - Math.pow(0.01, delta);
+    // Smooth lerp — faster on mobile so camera keeps up
+    const smoothness = mobile ? 0.05 : 0.01;
+    const lerpFactor = 1 - Math.pow(smoothness, delta);
     camera.position.lerp(targetCamPos, lerpFactor);
 
-    // Look at player
+    // Look at player (slightly above feet on mobile)
+    const lookY = mobile
+      ? targetPosition.current.y - 0.2
+      : targetPosition.current.y - 0.5;
     const lookTarget = new THREE.Vector3(
       targetPosition.current.x,
-      targetPosition.current.y - 0.5,
+      lookY,
       targetPosition.current.z
     );
     camera.lookAt(lookTarget);
   });
 
-  // Invisible target marker if no external ref provided
   if (!targetRef) {
     return (
       <group ref={internalRef} position={[0, 2, 0]}>

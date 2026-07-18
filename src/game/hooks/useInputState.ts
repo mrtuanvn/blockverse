@@ -75,6 +75,10 @@ export function getInputState(): Readonly<InputState> {
   return inputState;
 }
 
+// ─── Player world-space movement direction (for auto-camera) ───
+// Set by Player.tsx each frame, read by ThirdPersonCamera.tsx
+export const playerWorldMove = { x: 0, z: 0, isMoving: false };
+
 // ─── Keyboard side ───
 let keyboardMoveX = 0;
 let keyboardMoveZ = 0;

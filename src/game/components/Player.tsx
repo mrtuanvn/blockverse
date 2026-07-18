@@ -5,7 +5,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { RigidBody, CuboidCollider } from '@react-three/rapier';
 import type { Mesh, Group } from 'three';
 import { useGameStore } from '@/game/store';
-import { getInputState, initKeyboardInput, isMobileDevice } from '@/game/hooks/useInputState';
+import { getInputState, initKeyboardInput, isMobileDevice, playerWorldMove } from '@/game/hooks/useInputState';
 
 interface PlayerProps {
   position?: [number, number, number];
@@ -90,21 +90,18 @@ export default function Player({
       return;
     }
 
-    // ─── Improved floor detection ───
-    // Using both collision callback AND velocity check
+    // ─── Floor detection (collision-based + velocity) ───
+    // onCollisionEnter sets isOnFloor=true. We keep it true while
+    // vertical velocity is low. NO height check — works at any altitude.
     const wasOnFloor = isOnFloor.current;
-    // Floor check: low vertical velocity AND not too high above spawn
-    const velCheck = Math.abs(rbVel.y) < 1.0;
-    const heightCheck = rbPos.y < spawnPos.current[1] + 2.0;
-    const newFloorState = velCheck && heightCheck;
+    const velCheck = Math.abs(rbVel.y) < 1.5;
+    const newFloorState = (isOnFloor.current && velCheck) || (wasOnFloor && velCheck);
 
     if (newFloorState && !wasOnFloor) {
-      // Just landed
       lastGroundedTime.current = time;
     }
     isOnFloor.current = newFloorState;
 
-    // Update coyote timer — keep refreshing while on ground
     if (isOnFloor.current) {
       lastGroundedTime.current = time;
     }
@@ -129,6 +126,11 @@ export default function Player({
     const worldMoveX = moveX * cos + moveZ * sin;
     const worldMoveZ = -moveX * sin + moveZ * cos;
 
+    // Export for auto-camera-follow
+    playerWorldMove.x = worldMoveX;
+    playerWorldMove.z = worldMoveZ;
+    playerWorldMove.isMoving = isMoving;
+
     // ─── Smooth acceleration / deceleration ───
     const targetVelX = worldMoveX * MOVE_SPEED;
     const targetVelZ = worldMoveZ * MOVE_SPEED;
@@ -149,18 +151,18 @@ export default function Player({
     const timeSinceGrounded = time - lastGroundedTime.current;
     const canCoyoteJump = timeSinceGrounded < COYOTE_TIME;
 
-    // Track when jump was pressed
+    // Track when jump was first pressed (rising edge)
     if (currentJump && !lastJump.current) {
       lastJumpPressTime.current = time;
     }
 
-    // Check if we should jump (either now or buffered)
+    // Execute jump if: recently pressed (buffer) AND on ground (or coyote)
     const timeSinceJumpPress = time - lastJumpPressTime.current;
-    const jumpBuffered = timeSinceJumpPress < JUMP_BUFFER;
+    const jumpBuffered = timeSinceJumpPress < JUMP_BUFFER && lastJumpPressTime.current > 0;
 
-    if (jumpBuffered && !lastJump.current && (isOnFloor.current || canCoyoteJump)) {
+    if (jumpBuffered && (isOnFloor.current || canCoyoteJump)) {
       apiRef.current.setLinvel({ x: clampedX, y: JUMP_FORCE, z: clampedZ }, true);
-      lastJumpPressTime.current = 0; // Consume the buffer
+      lastJumpPressTime.current = 0;
       vibrateJump();
     }
     lastJump.current = currentJump;

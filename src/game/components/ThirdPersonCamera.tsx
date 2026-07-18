@@ -4,7 +4,7 @@ import { useRef, useEffect, useCallback } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import type { Group } from 'three';
 import * as THREE from 'three';
-import { consumeCameraDelta, consumePointerLockRequest, isMobileDevice } from '@/game/hooks/useInputState';
+import { consumeCameraDelta, isMobileDevice, playerWorldMove } from '@/game/hooks/useInputState';
 
 interface ThirdPersonCameraProps {
   targetRef?: React.RefObject<Group | null>;
@@ -29,17 +29,19 @@ export default function ThirdPersonCamera({
   const internalRef = useRef<Group>(null);
   const isMobile = useRef(false);
 
+  // For auto-follow: track last manual camera input time
+  const lastManualInput = useRef(0);
+
   const effectiveRef = targetRef || internalRef;
 
-  // Detect mobile once
   useEffect(() => {
     isMobile.current = isMobileDevice();
   }, []);
 
-  // Mobile: start with a slightly higher angle so you can see more
+  // Mobile: start looking slightly down
   useEffect(() => {
     if (isMobile.current) {
-      rotationX.current = 0.3; // Slightly looking down
+      rotationX.current = 0.35;
     }
   }, []);
 
@@ -55,15 +57,14 @@ export default function ThirdPersonCamera({
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!isLocked.current) return;
-
     rotationY.current -= e.movementX * 0.002;
     rotationX.current = Math.max(
       -Math.PI / 3,
       Math.min(Math.PI / 3, rotationX.current + e.movementY * 0.002)
     );
-
     cameraOffsetState.rotationY = rotationY.current;
     cameraOffsetState.rotationX = rotationX.current;
+    lastManualInput.current = performance.now();
   }, [camera]);
 
   useEffect(() => {
@@ -72,13 +73,11 @@ export default function ThirdPersonCamera({
 
   useEffect(() => {
     const canvas = gl.domElement;
-
     if (!isMobile.current) {
       canvas.addEventListener('click', handleClick);
       document.addEventListener('pointerlockchange', handlePointerLockChange);
       document.addEventListener('mousemove', handleMouseMove);
     }
-
     return () => {
       if (!isMobile.current) {
         canvas.removeEventListener('click', handleClick);
@@ -98,7 +97,10 @@ export default function ThirdPersonCamera({
       targetPosition.current.y += 2;
     }
 
-    // ─── Consume touch camera delta ───
+    const now = performance.now();
+    const mobile = isMobile.current;
+
+    // ─── Consume touch camera delta (manual swipe) ───
     const touchDelta = consumeCameraDelta();
     if (touchDelta.dx !== 0 || touchDelta.dy !== 0) {
       rotationY.current -= touchDelta.dx;
@@ -108,12 +110,34 @@ export default function ThirdPersonCamera({
       );
       cameraOffsetState.rotationY = rotationY.current;
       cameraOffsetState.rotationX = rotationX.current;
+      lastManualInput.current = now;
     }
 
-    // ─── Camera distance: closer on mobile for better visibility ───
-    const mobile = isMobile.current;
-    const distance = mobile ? offset[2] * 0.75 : offset[2]; // 25% closer on mobile
-    const height = mobile ? offset[1] * 0.85 : offset[1];   // Slightly lower on mobile
+    // ─── AUTO-FOLLOW: rotate camera behind player when moving ───
+    // Only on mobile, and only if no manual input in the last 1.5 seconds
+    if (mobile && playerWorldMove.isMoving && now - lastManualInput.current > 1500) {
+      // Player's world movement direction
+      const moveAngle = Math.atan2(playerWorldMove.x, playerWorldMove.z);
+      // Camera should be behind the player = opposite of movement
+      const desiredCamAngle = moveAngle + Math.PI;
+
+      // Find shortest rotation difference
+      let diff = desiredCamAngle - rotationY.current;
+      while (diff > Math.PI) diff -= 2 * Math.PI;
+      while (diff < -Math.PI) diff += 2 * Math.PI;
+
+      // Smoothly rotate camera (slow rotation, not instant)
+      const autoRotateSpeed = 1.8; // radians/sec — gentle
+      const maxStep = autoRotateSpeed * delta;
+      const step = Math.abs(diff) < maxStep ? diff : Math.sign(diff) * maxStep;
+      rotationY.current += step;
+
+      cameraOffsetState.rotationY = rotationY.current;
+    }
+
+    // ─── Camera distance ───
+    const distance = mobile ? offset[2] * 0.7 : offset[2];
+    const height = mobile ? offset[1] * 0.8 : offset[1];
 
     const sphericalY = rotationY.current;
     const sphericalX = rotationX.current;
@@ -124,21 +148,20 @@ export default function ThirdPersonCamera({
 
     const targetCamPos = new THREE.Vector3(camX, camY, camZ);
 
-    // Smooth lerp — faster on mobile so camera keeps up
-    const smoothness = mobile ? 0.05 : 0.01;
+    // Smooth follow — fast on mobile
+    const smoothness = mobile ? 0.02 : 0.01;
     const lerpFactor = 1 - Math.pow(smoothness, delta);
     camera.position.lerp(targetCamPos, lerpFactor);
 
-    // Look at player (slightly above feet on mobile)
+    // Look at player
     const lookY = mobile
       ? targetPosition.current.y - 0.2
       : targetPosition.current.y - 0.5;
-    const lookTarget = new THREE.Vector3(
+    camera.lookAt(
       targetPosition.current.x,
       lookY,
       targetPosition.current.z
     );
-    camera.lookAt(lookTarget);
   });
 
   if (!targetRef) {
